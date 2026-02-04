@@ -1,7 +1,7 @@
+from server.database.db import check_db_connection, get_engine, get_session
 from fastapi import FastAPI, HTTPException
 import uvicorn
 
-from database.db import check_db_connection, get_engine, get_session
 
 app = FastAPI()
 
@@ -30,9 +30,9 @@ async def session_info():
         return {"session_info": str(session)}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # Updated to use an importable module path so reload works when started from the repo root
+    uvicorn.run("server.main:app", host="127.0.0.1", port=8000, reload=True)
 
-# current dev command: python3 -m fastapi dev main.py
-
-# local server hello world endpoint is reachable
-# db is reachable from health endpoint
+#dev commands:
+# - FastAPI CLI: python -m fastapi dev server.main:app
+# - Uvicorn directly: uvicorn server.main:app --reload

@@ -8,9 +8,36 @@ Citi Bike the company publishes their system data monthly in GCBI format, "this 
 
 # Quick Start
 
+1. Create and activate a virtual environment (optional but recommended):
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+2. Install dependencies:
+
+   ```
+   python3 -m pip install -r requirements.txt
+   ```
+
+3. Set environment variables
+
+   ```python
+   # On Windows (PowerShell):
+   $env:DB_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
+   $env:SSL_CA_PATH="C:\path\to\ca-certificate.pem"
+   ```
+
+4. Start FastAPI server
+
+   ```
+   python3 -m fastapi dev main.py
+   ```
+
 # Project Status
 
-A Postgres database was setup, hosted through Digital Ocean.
+A Postgres database was set up, hosted through Digital Ocean.
 
 # Technologies Used [^badgesSource]
 
