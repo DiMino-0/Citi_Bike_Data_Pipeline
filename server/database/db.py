@@ -1,49 +1,40 @@
 import os
+import ssl
 from dotenv import load_dotenv
 from typing import AsyncGenerator
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from fastapi import FastAPI, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-import uvicorn
 
 #load environment variables from .env file
 load_dotenv()
 
 #connect to database
 DB_URL = os.getenv("DB_URL")
-DB_KEY = os.getenv("DB_KEY")
 
-# 'postgresql+asyncpg' for async operations, 'postgresql' for sync
-# For sync: engine = create_engine(DB_URL, echo=True) 
+if not DB_URL:
+    raise RuntimeError("DB_URL is not set in environment")
 
-# Create engine for async using asyncio from SQLAlchemy:
-engine = create_async_engine(DB_URL, echo=True)
+# Create SSL context for asyncpg
+ssl_context = ssl.create_default_context(cafile = os.getenv("SSL_CA_PATH"))
+ssl_context.verify_mode = ssl.CERT_REQUIRED
 
-app = FastAPI()
+# Create async engine
+engine = create_async_engine(DB_URL, echo=True, connect_args={"ssl": ssl_context})
+
+# async session factory
+AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
 async def check_db_connection() -> bool:
-	"""Run a small query to confirm DB is reachable."""
-	try:
-		async with engine.connect() as conn:
-			await conn.execute(text("SELECT 1"))
-		return True
-	except SQLAlchemyError:
-		return False
-
-@app.get("/health")
-async def health():
-	"""Health endpoint: returns 200 when DB is reachable, 503 otherwise."""
-	if not await check_db_connection():
-		raise HTTPException(status_code=503, detail="database unavailable")
-	return {"status": "ok", "database": "ok"}
+    """Run a small query to confirm DB is reachable."""
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return True
+    except SQLAlchemyError:
+        return False
 
 # For async session management
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         yield session
-
-if __name__ == "__main__":
-	# Run with: python main.py  (use `uvicorn main:app --reload` for development)
-	uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
