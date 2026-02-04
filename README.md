@@ -4,7 +4,7 @@ This project seeks to build an end-to-end data pipeline that automatically fetch
 
 # The Data
 
-Citi Bike the company publishes their system data monthly in GCBI format, "this data is provided according to the NYCBS Data Use Policy." The data is free to use and can be found [here](https://data.cityofnewyork.us/dataset/Citi-Bike-System-Data/vsnr-94wk/about_data "NYC Open Data").
+Citi Bike the company publishes their system data monthly in GBFS, or General Bikeshare Feed Specification, format. "This data is provided according to the NYCBS Data Use Policy." The data is free to use and can be found [here](https://data.cityofnewyork.us/dataset/Citi-Bike-System-Data/vsnr-94wk/about_data "NYC Open Data").
 
 # Quick Start
 
@@ -32,7 +32,8 @@ Citi Bike the company publishes their system data monthly in GCBI format, "this 
 4. Start FastAPI server
 
    ```
-   python3 -m fastapi dev main.py
+   FastAPI CLI: python -m fastapi dev server.main:app
+   Uvicorn directly: uvicorn server.main:app --reload
    ```
 
 # Project Status
