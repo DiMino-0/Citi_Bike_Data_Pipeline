@@ -23,9 +23,9 @@ Citi Bike the company publishes their system data monthly in GBFS, or General Bi
 
 3. Set environment variables
 
-   ```python
-   # On Windows (PowerShell):
-   $env:DB_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
+   ```powershell
+   # On Windows
+   $env:DB_URL="postgresql+asyncpg://<user>:<password>@<host>:<port>/<database>"
    $env:SSL_CA_PATH="C:\path\to\ca-certificate.pem"
    ```
 

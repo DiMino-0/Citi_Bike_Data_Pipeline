@@ -89,7 +89,7 @@ async def check_db_connection() -> bool:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
-    except SQLAlchemyError:
+    except (SQLAlchemyError, RuntimeError, ssl.SSLError):
         return False
 
 # `get_session()` is an async generator (used as a FastAPI dependency)
