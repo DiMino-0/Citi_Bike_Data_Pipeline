@@ -1,5 +1,7 @@
 import os
 import ssl
+import asyncio
+from typing import Optional
 from dotenv import load_dotenv
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -9,11 +11,6 @@ from sqlalchemy.exc import SQLAlchemyError
 #load environment variables from .env file
 load_dotenv()
 
-#connect to database
-DB_URL = os.getenv("DB_URL")
-
-if not DB_URL:
-    raise RuntimeError("DB_URL is not set in environment")
 
 def _create_ssl_context() -> ssl.SSLContext | None:
     """Create SSL context if SSL_CA_PATH is set; otherwise return None."""
@@ -25,17 +22,14 @@ def _create_ssl_context() -> ssl.SSLContext | None:
     return ctx
 
 # Lazy initialization of async engine and sessionmaker
-import asyncio
-from typing import Optional
-
 _engine: Optional[object] = None  # will be AsyncEngine when initialized
 _async_session_local: Optional[async_sessionmaker] = None
 _engine_lock = asyncio.Lock()
 
 # Initializer for the async engine and sessionmaker
 async def init_engine(db_url: Optional[str] = None) -> None:
-    """Initialize the async engine and sessionmaker if not already done.
-
+    """
+    Initialize the async engine and sessionmaker if not already done.
     Pass an explicit db_url to override the environment value.
     """
     global _engine, _async_session_local
@@ -52,16 +46,18 @@ async def init_engine(db_url: Optional[str] = None) -> None:
             _async_session_local = async_sessionmaker(bind=_engine, expire_on_commit=False)
 
 # Accessor for the async engine
-async def get_engine() -> object:
-    """Return the initialized async engine, initializing it if needed."""
+async def get_engine(db_url: Optional[str] = None) -> object:
+    """
+    Return the initialized async engine, initializing it if needed.
+    Pass `db_url` to override the environment value when initializing.
+    """
     if _engine is None:
-        await init_engine()
+        await init_engine(db_url=db_url)
     return _engine
-
 
 # for cleaning up async resources
 async def dispose_engine() -> None:
-    """Dispose the underlying engine and reset cached objects."""
+    # Dispose the underlying engine and reset cached objects.
     global _engine, _async_session_local
     async with _engine_lock:
         if _engine is not None:
@@ -73,9 +69,9 @@ async def dispose_engine() -> None:
             _engine = None
             _async_session_local = None
 
-
+# Health check for DB connectivity
 async def check_db_connection() -> bool:
-    """Run a small query to confirm DB is reachable."""
+    # Run a small query to confirm DB is reachable.
     try:
         engine = await get_engine()
         async with engine.connect() as conn:
@@ -84,10 +80,16 @@ async def check_db_connection() -> bool:
     except SQLAlchemyError:
         return False
 
- # `get_session()` is an async generator (used as a FastAPI dependency)
- # non-blocking connection for db queries 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+# `get_session()` is an async generator (used as a FastAPI dependency)
+# non-blocking connection for db queries 
+async def get_session(db_url: Optional[str] = None) -> AsyncGenerator[AsyncSession, None]:
+    """Async generator dependency that yields a DB session.
+    Can Pass `db_url` to override the environment value (useful for tests).
+    """
     # Ensure engine & sessionmaker are initialized
-    await init_engine()
+    await init_engine(db_url=db_url)
     if _async_session_local is None:
         raise RuntimeError("Database session factory is not initialized")
+
+    async with _async_session_local() as session:
+        yield session
