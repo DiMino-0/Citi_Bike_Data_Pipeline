@@ -89,6 +89,5 @@ async def check_db_connection() -> bool:
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     # Ensure engine & sessionmaker are initialized
     await init_engine()
-    assert _async_session_local is not None
-    async with _async_session_local() as session:
-        yield session
+    if _async_session_local is None:
+        raise RuntimeError("Database session factory is not initialized")
