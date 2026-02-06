@@ -32,7 +32,7 @@ The data has 13 features, as follows:
 - **Geospatial**: `start_lat`, `start_lng`, `end_lat`, `end_lng`
 - **User type**: `member_casual`
 
-Citi Bike the company publishes their system data monthly in GBFS, or General Bikeshare Feed Specification, format. "This data is provided according to the NYCBS Data Use Policy." The data is free to use and can be found [here](https://data.cityofnewyork.us/dataset/Citi-Bike-System-Data/vsnr-94wk/about_data "NYC Open Data") if you want to examine it.
+Citi Bike the company publishes their system data monthly in GBFS, or General Bikeshare Feed Specification, format. "This data is provided according to the NYCBS Data Use Policy." The data is free to use and can be found [at data city of NY.](https://data.cityofnewyork.us/dataset/Citi-Bike-System-Data/vsnr-94wk/about_data "NYC Open Data") if you want to examine it.
 
 Derived Metrics: tbd
 
