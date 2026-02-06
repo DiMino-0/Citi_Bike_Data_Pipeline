@@ -8,7 +8,7 @@
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely. A FastAPI backend running locally was connected to the db with some test routes. Middleware: added cors to FastAPI app.
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. middleware added: CORS.
 
 ## **Data Pipeline**
 
@@ -108,17 +108,17 @@ First clone the repo and move to the root dir, then follow the below steps.
 
    **FastAPI CLI:**
 
-   ```bash
+   ```cmd
    python3 -m fastapi dev main.py
    ```
 
    **Uvicorn directly:**
 
-   ```bash
+   ```cmd
    uvicorn main.py --reload
    ```
 
-# Technologies Used [^badgesSource]
+## Technologies Used [^badgesSource]
 
 - [![DigitalOcean](https://img.shields.io/badge/DigitalOcean-%230167ff.svg?style=for-the-badge&logo=digitalOcean&logoColor=white)](https://digitalocean.com)
 - ![Postgres](https://img.shields.io/badge/postgres-%23316192.svg?style=for-the-badge&logo=postgresql&logoColor=white)
