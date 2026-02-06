@@ -1,6 +1,6 @@
-## **Citi Bike Data Pipeline**
+# **Citi Bike Data Pipeline**
 
-### **Overview**
+## **Overview**
 
 **Purpose**: An end-to-end data pipeline that obtains and cleans monthly Citi Bike trip records, performs analysis on ridership patterns, station usage, and member behavior, and makes these results viewable on a web app automatically.
 
@@ -8,13 +8,11 @@
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely. A FastAPI backend running locally was connected to the db with some test routes. Middleware: added cors to FastAPI app.
 
-A Postgres database and Ubuntu server were set up, hosted through Digital Ocean.
+## **Data Pipeline**
 
-### **Data Pipeline**
-
-#### **Ingestion**
+### **Ingestion**
 
 Fetches monthly data from S3:
 
@@ -24,7 +22,7 @@ Fetches monthly data from S3:
   via cron job and py script on backing server
 - Uses `requests` (download), `zipfile` (extraction), `io` (file handling), pandas (cleaning/transformation)
 
-#### **Processing**
+### **Processing**
 
 The data has 13 features, as follows:
 
@@ -42,12 +40,14 @@ Visualizations Made: tbd
 
 Conclusions Drawn: tbd
 
-#### **Storage**
+### **Storage**
 
-- SQLModel handles dual role as ORM (SQLAlchemy) and API schema (Pydantic)
+PostgreSQL 18 database is being used to hold all the data.
+
+- Avoiding duplicate code via SQLModel filling a dual role as ORM (SQLAlchemy) and API schema (Pydantic)
 - Async operations via postgresql+asyncpg driver with asyncpg for session management.
 
-### **API**
+## **API**
 
 FastAPI with Uvicorn ASGI server for concurrent connections.
 
@@ -57,41 +57,50 @@ FastAPI with Uvicorn ASGI server for concurrent connections.
 - `GET /engine/info` - info on asyncpg engine
 - `GET /session/info` - async session info
 
-### **Frontend**
+## **Middleware**
+
+- CORS (Cross-Origin Resource Sharing) was implemented to allow safe back-front end communication.
+
+## **Frontend**
 
 React + Vite stack with data visualization components. The react app makes HTTP requests to FastAPI endpoints, receives JSON responses in turn.
 
-### **Prerequisites**
+## **Prerequisites**
 
 - Python 3.13+
 - PostgreSQL 14+
 - Node.js 18+ (frontend)
 
-# **Quick Start (Windows)**
+## **Quick Start (Windows)**
 
 First clone the repo and move to the root dir, then follow the below steps.
 
 1. Create and activate a virtual environment using venv (optional but recommended):
 
-   ```bash
+   ```cmd
    python3 -m venv your_venv_name
    .venv\Scripts\activate
    ```
 
 2. Install dependencies:
 
-   ```
+   ```cmd
    python3 -m pip install -r requirements.txt
    ```
 
-3. Set environment variables, use with python-dotenv
+3. Optional - Set environment variables
 
-   ```powershell
-   $env:DB_URL="postgresql+asyncpg://<user>:<password>@<host>:<port>/<database>"
-   $env:SSL_CA_PATH="C:\path\to\ca-certificate.pem"
+   ```.env
+   DB_URL="postgresql+asyncpg://<user>:<password>@<host>:<port>/<database>"
+   SSL_CA_PATH="C:\path\to\ca-certificate.pem"
+   CORS_ALLOWED_ORIGINS="http://127.0.0.1:8000,http://localhost:8000"
+   DB_ECHO=1
+   LOAD_DOTENV=1
    ```
 
-   _if using dotenv, include in .gitignore_[^gitignore]
+   - use gitignore for secrets [^gitignore]
+
+   **CORS note:** `CORS_ALLOWED_ORIGINS` can be set to a comma-separated list of allowed origins (for example: `"http://127.0.0.1:8000,http://localhost:8000"`). If unset, the server defaults to a restrictive set of local development origins (127.0.0.1:8000 and 127.0.0.1:8000).
 
 4. Start FastAPI (backend) server, you can use their wrapper or Uvicorn directly
 
@@ -99,13 +108,13 @@ First clone the repo and move to the root dir, then follow the below steps.
 
    **FastAPI CLI:**
 
-   ```
+   ```bash
    python3 -m fastapi dev main.py
    ```
 
    **Uvicorn directly:**
 
-   ```
+   ```bash
    uvicorn main.py --reload
    ```
 
