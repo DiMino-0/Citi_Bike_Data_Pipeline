@@ -60,5 +60,5 @@ if __name__ == "__main__":
     uvicorn.run("server.main:app", host="127.0.0.1", port=8000, reload=True)
 
 #dev commands:
-# - FastAPI CLI: python -m fastapi dev server.main:app
-# - Uvicorn directly: uvicorn server.main:app --reload
+# - FastAPI CLI: python3 -m fastapi dev main.py
+# - Uvicorn directly: uvicorn main.py --reload
