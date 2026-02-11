@@ -42,3 +42,4 @@ if __name__ == "__main__":
 #dev commands:
 # - FastAPI CLI: python3 -m fastapi dev main.py
 # - Uvicorn directly: uvicorn main.py --reload
+# - Docker container: docker-compose up --build in root

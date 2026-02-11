@@ -8,7 +8,11 @@
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Nginx reverse proxy added.
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to server static react files, and to act as a reverse proxy (forwards /api to backend).
+
+**Currently working on:**
+backend: Systemd service for server, ingestion script w/ cron job
+frontend: navigation and server state management (React Router, TanStack Query)
 
 ## **Data Pipeline**
 
