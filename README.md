@@ -8,7 +8,7 @@
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. middleware added: CORS.
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Nginx reverse proxy added.
 
 ## **Data Pipeline**
 
@@ -59,7 +59,7 @@ FastAPI with Uvicorn ASGI server for concurrent connections.
 
 ## **Middleware**
 
-- CORS (Cross-Origin Resource Sharing) was implemented to allow safe back-front end communication.
+- Nginx reverse proxy routes frontend requests to the FastAPI backend.
 
 ## **Frontend**
 
@@ -93,14 +93,11 @@ First clone the repo and move to the root dir, then follow the below steps.
    ```.env
    DB_URL="postgresql+asyncpg://<user>:<password>@<host>:<port>/<database>"
    SSL_CA_PATH="C:\path\to\ca-certificate.pem"
-   CORS_ALLOWED_ORIGINS="http://127.0.0.1:8000,http://localhost:8000"
    DB_ECHO=1
    LOAD_DOTENV=1
    ```
 
    - use gitignore for secrets [^gitignore]
-
-   **CORS note:** `CORS_ALLOWED_ORIGINS` can be set to a comma-separated list of allowed origins (for example: `"http://127.0.0.1:8000,http://localhost:8000"`). If unset, the server defaults to a restrictive set of local development origins (127.0.0.1:8000 and 127.0.0.1:8000).
 
 4. Start FastAPI (backend) server, you can use their wrapper or Uvicorn directly
 
