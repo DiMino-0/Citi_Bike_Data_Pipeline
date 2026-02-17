@@ -254,3 +254,14 @@ dist-ssr
 *.sw?
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,visualstudiocode,venv,dotenv,python
+
+# Project-specific
+**/.env
+**/.env.*
+!**/.env.example
+
+client/.vite/
+client/coverage/
+
+*.sqlite3
+*.db
