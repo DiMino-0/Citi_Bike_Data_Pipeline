@@ -52,6 +52,27 @@ async def init_engine(db_url: Optional[str] = None, echo: Optional[bool] = None)
     if not db_url:
         raise RuntimeError("DB_URL is not set in environment")
 
+    # Log the DB URL scheme (e.g. 'postgresql+asyncpg') for easier diagnosis
+    try:
+        scheme = db_url.split("://", 1)[0]
+    except Exception:
+        scheme = "unknown"
+    logger.info("Initializing DB engine, scheme=%s", scheme)
+
+    # Report whether an SSL CA path is configured and whether the file exists
+    cafile = os.getenv("SSL_CA_PATH")
+    if cafile:
+        try:
+            cafile_path = Path(cafile)
+            exists = cafile_path.exists()
+            logger.info("SSL_CA_PATH set: %s (exists=%s)", cafile, exists)
+            if not exists:
+                logger.warning("SSL_CA_PATH file not found: %s", cafile)
+        except Exception as exc:
+            logger.warning("Error checking SSL_CA_PATH (%s): %s", cafile, exc)
+    else:
+        logger.info("SSL_CA_PATH not set; no SSL context will be used")
+
     async with _engine_lock:
         if _engine is None:
             ssl_ctx = _create_ssl_context()
