@@ -1,11 +1,16 @@
 import os
 import ssl
 import asyncio
+import logging
+from pathlib import Path
 from typing import Optional
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker, AsyncEngine
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+
+
+logger = logging.getLogger(__name__)
 
 # abstracted sql logging from static value to env variable
 # default false to make sure its off in production unless explicitly set
@@ -87,7 +92,8 @@ async def check_db_connection() -> bool:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
-    except (SQLAlchemyError, RuntimeError, ssl.SSLError):
+    except (SQLAlchemyError, RuntimeError, ssl.SSLError, ModuleNotFoundError, ImportError, OSError) as exc:
+        logger.warning("Database connectivity check failed: %s", exc)
         return False
 
 # `get_session()` is an async generator (used as a FastAPI dependency)

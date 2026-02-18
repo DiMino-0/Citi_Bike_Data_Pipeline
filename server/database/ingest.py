@@ -6,11 +6,6 @@ import zipfile
 
 
 logger = logging.getLogger(__name__)
-if not logging.getLogger().handlers:
-	logging.basicConfig(
-		level=logging.INFO,
-		format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-	)
 
 
 def _download_zip(url: str) -> bytes:
