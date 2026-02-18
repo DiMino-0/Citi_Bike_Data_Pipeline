@@ -10,11 +10,11 @@ from sqlalchemy.exc import SQLAlchemyError
 # abstracted sql logging from static value to env variable
 # default false to make sure its off in production unless explicitly set
 def _read_bool_env(DB_ECHO: str, default: bool = False) -> bool:
-    """Return the boolean value of an environment variable DB_ECHO.
+    """Return the boolean value of an environment variable.
 
     Recognizes: '1', 'true', 'yes', 'on' (case-insensitive).
     """
-    val = os.getenv("DB_ECHO")
+    val = os.getenv(DB_ECHO)
     if val is None:
         return default
     return val.lower() in ("1", "true", "yes", "on")
@@ -65,6 +65,8 @@ async def get_engine(db_url: Optional[str] = None, echo: Optional[bool] = None) 
     """
     if _engine is None:
         await init_engine(db_url=db_url, echo=echo)
+    if _engine is None:
+        raise RuntimeError("Failed to initialize database engine")
     return _engine
 
 # for cleaning up async resources
@@ -73,11 +75,7 @@ async def dispose_engine() -> None:
     global _engine, _async_session_local
     async with _engine_lock:
         if _engine is not None:
-            # AsyncEngine.dispose() may be sync or async depending on SQLAlchemy version
-            try:
-                await _engine.dispose()
-            except TypeError:
-                _engine.dispose()
+            await _engine.dispose()
             _engine = None
             _async_session_local = None
 
