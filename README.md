@@ -171,7 +171,7 @@ docker compose logs -f frontend backend db
 Quick API check:
 
 ```cmd
-curl http://localhost:3000/api/db/health
+curl http://localhost/api/db/health
 ```
 
 Stop stack:
@@ -208,6 +208,85 @@ docker compose down
 - ![React Router](https://img.shields.io/badge/React%20Router-CA4245?style=for-the-badge&logo=reactrouter&logoColor=white)
 - ![TanStack Query](https://img.shields.io/badge/TanStack%20Query-FF4154?style=for-the-badge&logo=reactquery&logoColor=white)
 - ![NodeJS](https://img.shields.io/badge/node.js-6DA55F?style=for-the-badge&logo=node.js&logoColor=white)
+
+### Production Architecture ASCII Visualization
+
+```ASCII
+         ┌──────────────────────────┐
+         │        End User          │
+         │  Browser / React Client  │
+         │  (Vite-built bundle)     │
+         └─────────────┬────────────┘
+                       │
+                       │ HTTP/HTTPS Requests
+                       │ Domain: pending...
+                       ▼
+┌────────────────────────────────────────────┐
+│      APP DROPLET (Digital Ocean)           │
+│  ┌────────────────────────────────────┐    │
+│  │         NGINX                      │    │
+│  │   Reverse Proxy + Static File      │    │
+│  │          Server                    │    │
+│  │  (serves React index.html +        │    │
+│  │   forwards /api to backend)        │    │
+│  └───────────┬────────────────────────┘    │
+│              │                             │
+│  /api/*      │      /* (frontend)          │
+│  requests    │      routes served          │
+│  proxied     │      as static files        │
+│              │                             │
+│              ▼                             │
+│  ┌──────────────────────────────────┐      │
+│  │           Gunicorn               │      │
+│  │   (WSGI, Process Manager)        │      │
+│  │   manages multiple               │      │
+│  │   Uvicorn ASGI workers           │      │
+│  │   ┌────────────────────────────┐ │      │
+│  │   │   FastAPI App              │ │      │
+│  │   │  - API routing             │ │      │
+│  │   │  - Pydantic validation     │ │      │
+│  │   │  - Error handling          │ │      │
+│  │   │  - Business logic          │ │      │
+│  │   └───────────┬────────────────┘ │      │
+│  └───────────────┼──────────────────┘      │
+│                  │                         │
+│  ┌───────────────┴────────────────────┐    │
+│  │   Data Ingestion (Cron Job)        │    │
+│  │  - requests lib (download)         │    │
+│  │  - zipfile (extraction)            │    │
+│  │  - pandas (cleaning)               │    │
+│  │  - asyncpg (postgres insert)       │    │
+│  └───────────────┬────────────────────┘    │
+│                  │                         │
+└──────────────────┼─────────────────────────┘
+                   │
+                   │ Private network
+                   │ SQLAlchemy ORM
+                   │ SQLModel schemas
+                   │ asyncpg driver
+                   │ (connection string with
+                   │  DB droplet private IP)
+                   ▼
+┌────────────────────────────────────────────┐
+│    MANAGED DATABASE (Digital Ocean)        │
+│  ┌──────────────────────────────────┐      │
+│  │      PostgreSQL                  │      │
+│  │   - Stores trip data             │      │
+│  │   - Cleaned CSV records          │      │
+│  │   - Analytics results            │      │
+│  │                                  │      │
+│  └──────────────────────────────────┘      │
+└────────────────────────────────────────────┘
+                   ▲
+                   │
+                   │ Monthly fetch from
+                   │ data ingestion cron
+                   │
+    ┌──────────────┴─────────────┐
+    │  Citi Bike S3 Bucket       │
+    │     YYYYMM-tripdata.csv.zip│
+    └────────────────────────────┘
+```
 
 [^badgesSource]: badges from [Ileriayo/markdown-badges](https://github.com/Ileriayo/markdown-badges/tree/master)
 
