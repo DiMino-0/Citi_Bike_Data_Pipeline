@@ -7,6 +7,8 @@
 **/.classpath
 **/.dockerignore
 **/.env
+**/.env.local
+**/.env.*.local
 **/.git
 **/.gitignore
 **/.project
@@ -16,6 +18,7 @@
 **/.vscode
 **/.next
 **/.cache
+**/.vite
 **/*.*proj.user
 **/*.dbmdl
 **/*.jfm
@@ -28,6 +31,7 @@
 **/obj
 **/secrets.dev.yaml
 **/values.dev.yaml
+**/coverage
 **/build
 **/dist
 LICENSE

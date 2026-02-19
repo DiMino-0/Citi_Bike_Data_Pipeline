@@ -1,20 +1,25 @@
 import os
 import ssl
 import asyncio
+import logging
+from pathlib import Path
 from typing import Optional
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker, AsyncEngine
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+
+logger = logging.getLogger(__name__)
+
 # abstracted sql logging from static value to env variable
 # default false to make sure its off in production unless explicitly set
 def _read_bool_env(DB_ECHO: str, default: bool = False) -> bool:
-    """Return the boolean value of an environment variable DB_ECHO.
+    """Return the boolean value of an environment variable.
 
     Recognizes: '1', 'true', 'yes', 'on' (case-insensitive).
     """
-    val = os.getenv("DB_ECHO")
+    val = os.getenv(DB_ECHO)
     if val is None:
         return default
     return val.lower() in ("1", "true", "yes", "on")
@@ -47,6 +52,27 @@ async def init_engine(db_url: Optional[str] = None, echo: Optional[bool] = None)
     if not db_url:
         raise RuntimeError("DB_URL is not set in environment")
 
+    # Log the DB URL scheme (e.g. 'postgresql+asyncpg') for easier diagnosis
+    try:
+        scheme = db_url.split("://", 1)[0]
+    except Exception:
+        scheme = "unknown"
+    logger.info("Initializing DB engine, scheme=%s", scheme)
+
+    # Report whether an SSL CA path is configured and whether the file exists
+    cafile = os.getenv("SSL_CA_PATH")
+    if cafile:
+        try:
+            cafile_path = Path(cafile)
+            exists = cafile_path.exists()
+            logger.info("SSL_CA_PATH set: %s (exists=%s)", cafile, exists)
+            if not exists:
+                logger.warning("SSL_CA_PATH file not found: %s", cafile)
+        except Exception as exc:
+            logger.warning("Error checking SSL_CA_PATH (%s): %s", cafile, exc)
+    else:
+        logger.info("SSL_CA_PATH not set; no SSL context will be used")
+
     async with _engine_lock:
         if _engine is None:
             ssl_ctx = _create_ssl_context()
@@ -65,6 +91,8 @@ async def get_engine(db_url: Optional[str] = None, echo: Optional[bool] = None) 
     """
     if _engine is None:
         await init_engine(db_url=db_url, echo=echo)
+    if _engine is None:
+        raise RuntimeError("Failed to initialize database engine")
     return _engine
 
 # for cleaning up async resources
@@ -73,11 +101,7 @@ async def dispose_engine() -> None:
     global _engine, _async_session_local
     async with _engine_lock:
         if _engine is not None:
-            # AsyncEngine.dispose() may be sync or async depending on SQLAlchemy version
-            try:
-                await _engine.dispose()
-            except TypeError:
-                _engine.dispose()
+            await _engine.dispose()
             _engine = None
             _async_session_local = None
 
@@ -89,7 +113,8 @@ async def check_db_connection() -> bool:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
-    except (SQLAlchemyError, RuntimeError, ssl.SSLError):
+    except (SQLAlchemyError, RuntimeError, ssl.SSLError, ModuleNotFoundError, ImportError, OSError) as exc:
+        logger.warning("Database connectivity check failed: %s", exc)
         return False
 
 # `get_session()` is an async generator (used as a FastAPI dependency)
