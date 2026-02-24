@@ -201,23 +201,9 @@ def main(processed_file: str = "processed_months.json", output_dir: Optional[str
 		# raise RuntimeError(f"No Citi Bike dataset found for months: {target_months}")
 	return dataframes
 
-if __name__ == '__main__':
-	try:
-		dfs = main(months=3)
-	except Exception:
-		logger.exception("ingest.main failed")
-		dfs = {}
-
-	print(list(dfs.keys()))                 # list available months (e.g. ['data202512'])
-
-	for df in dfs.values():
-		# quick inspect
-		try:
-			print(df.shape)
-			print(df.columns.tolist())
-			print(df.head())        # first 5 rows
-			print(df.sample(5))     # random rows
-			df.info()               # dtypes & non-null counts
-			print(df.describe(include='all'))
-		except Exception:
-			logger.exception("Error while inspecting dataframe")
+# if __name__ == '__main__':
+# 	try:
+# 		dfs = main("data", months=3)
+# 	except Exception:
+# 		logger.exception("ingest.main failed")
+# 		dfs = {}
