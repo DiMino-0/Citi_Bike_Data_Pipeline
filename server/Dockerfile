@@ -10,6 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # the application crashes without emitting any logs due to buffering.
 ENV PYTHONUNBUFFERED=1
 
+# Install OS packages required to build some Python extensions (e.g. psycopg2)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Create a non-privileged user that the app will run under.

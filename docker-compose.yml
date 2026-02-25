@@ -1,35 +1,32 @@
 services:
   # The PostgreSQL Database Service
-  db:
-    image: postgres:15-alpine
-    container_name: postgres_db
-    env_file:
-      - ./server/.env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-citibike}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citibike}
-      POSTGRES_DB: ${POSTGRES_DB:-citibike}
-    volumes:
-      # This persists database data on your local machine
-      - postgres_data:/var/lib/postgresql/data
-      # This runs our initialization script on the first startup
-      - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql
-    networks:
-      - app-network
+  # db:
+  #   image: postgres:15-alpine
+  #   container_name: postgres_db
+  #   env_file:
+  #     - ./server/.env
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER:-citibike}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citibike}
+  #     POSTGRES_DB: ${POSTGRES_DB:-citibike}
+  #   volumes:
+  #     # This persists database data on your local machine
+  #     - postgres_data:/var/lib/postgresql/data
+  #     # This runs our initialization script on the first startup
+  #     - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql
+  #   networks:
+  #     - app-network
 
-  # Your FastAPI Backend Service
+  # FastAPI Backend Service
   backend:
     build: ./server
     container_name: fastapi_backend
     env_file:
       - ./server/.env
-    environment:
-      DB_URL: ${DB_URL:-postgresql+asyncpg://${POSTGRES_USER:-citibike}:${POSTGRES_PASSWORD:-citibike}@db:5432/${POSTGRES_DB:-citibike}}
-      SSL_CA_PATH: ${SSL_CA_PATH:-}
-      DB_ECHO: ${DB_ECHO:-0}
-      LOAD_DOTENV: ${LOAD_DOTENV:-0}
-    depends_on:
-      - db
+    volumes:
+      - C:/Users/josep/Documents/ca-certificate.crt:/etc/ssl/certs/ca-certificate.crt:ro
+    # depends_on:
+    #   - db
     networks:
       - app-network
 
@@ -47,11 +44,11 @@ services:
     networks:
       - app-network
 
-# Define the network and volume
+# Define the network
 networks:
   app-network:
     driver: bridge
 
-volumes:
-  postgres_data:
-    driver: local
+# volumes:
+#   postgres_data:
+#     driver: local

@@ -1,0 +1,71 @@
+name: Build and Deploy (prod)
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: ${{ secrets.DB_URL }}
+      # The workflow will write the certificate file on the server at this path
+      SSL_CA_PATH: /etc/ssl/certs/ca-certificate.crt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build backend image
+        run: |
+          docker build -t fastapi_backend:latest ./server
+
+      - name: Save image to tar
+        run: |
+          docker save fastapi_backend:latest -o backend.tar
+
+      - name: Copy image tar to server
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Using explicit workspace-relative source path to avoid ambiguity
+          source: ./backend.tar
+          target: /tmp/backend.tar
+
+      - name: Remove local image tar
+        run: rm -f backend.tar
+
+      - name: Deploy to host via SSH (write cert and .env)
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |-
+            set -euo pipefail
+            # ensure destination dirs
+            sudo mkdir -p /etc/ssl/certs
+            # write certificate from base64 secret (expanded on the runner from GitHub Secrets)
+            echo "${{ secrets.SSL_CA_B64 }}" | base64 --decode | sudo tee /etc/ssl/certs/ca-certificate.crt > /dev/null
+            sudo chmod 600 /etc/ssl/certs/ca-certificate.crt
+            sudo chown root:root /etc/ssl/certs/ca-certificate.crt
+
+            cd /path/to/deploy || exit 1
+            # create a minimal .env on the target from workflow env vars (no secrets left in repo)
+            cat > .env <<'EOF'
+            DB_URL=${DB_URL}
+            SSL_CA_PATH=${SSL_CA_PATH}
+            EOF
+            chmod 600 .env
+
+            # Load the transferred image and remove the tar
+            if [ -f /tmp/backend.tar ]; then
+              sudo docker load -i /tmp/backend.tar
+              rm /tmp/backend.tar
+            fi
+
+            # Bring up the stack using the prod override (uses the loaded image)
+            sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans

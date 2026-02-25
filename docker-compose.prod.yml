@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  backend:
+    image: fastapi_backend:latest
+    # Read secrets from runtime environment (injected by CI / orchestrator)
+    environment:
+      DB_URL: ${DB_URL}
+      SSL_CA_PATH: ${SSL_CA_PATH}
+      DB_ECHO: ${DB_ECHO:-0}
+    # No host path mounts: the deployment workflow places the certificate on the server
+    # and sets `SSL_CA_PATH` to the container-accessible path (e.g. /etc/ssl/certs/ca-certificate.crt).
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true
