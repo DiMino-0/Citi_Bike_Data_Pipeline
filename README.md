@@ -4,7 +4,7 @@
 
 **Purpose**: An end-to-end data pipeline that obtains and cleans monthly Citi Bike trip records, performs analysis on ridership patterns, station usage, and member behavior, and makes these results viewable on a web app automatically.
 
-**Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel + PDM) → PostgreSQL database → React frontend (Vite + Node.js)
+**Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel + PDM) → PostgreSQL database → React frontend (Vite + Node.js) (ascii visualization at bottom)
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
@@ -16,6 +16,21 @@
 - Frontend: Navigation and server state management (TanStack Query).
 
 ## **Data Pipeline**
+
+## **Timeline**
+
+Minimal task list (task — due date):
+
+- cron job on server — 2-25
+- populate database — 2-27
+- GH workflow for DO CICD prod branch, auto PR checks — 2-27
+- design frontend — 3-01
+- domain, configure dns — 2-27
+- aggregated metrics — 2-25
+- Visualizations — 2-25
+- Add the available historical data — 3-04
+- prettier — 3-06
+- Benchmarking — 3-04
 
 ### **Ingestion**
 
