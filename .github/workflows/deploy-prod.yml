@@ -38,7 +38,7 @@ jobs:
       - name: Remove local image tar
         run: rm -f backend.tar
 
-      - name: Deploy to host via SSH (write cert and .env)
+      - name: Deploy to host via SSH
         uses: appleboy/ssh-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -48,13 +48,13 @@ jobs:
             set -euo pipefail
             # ensure destination dirs
             sudo mkdir -p /etc/ssl/certs
-            # write certificate from base64 secret (expanded on the runner from GitHub Secrets)
+            # write certificate 
             echo "${{ secrets.SSL_CA_B64 }}" | base64 --decode | sudo tee /etc/ssl/certs/ca-certificate.crt > /dev/null
             sudo chmod 600 /etc/ssl/certs/ca-certificate.crt
             sudo chown root:root /etc/ssl/certs/ca-certificate.crt
 
             cd /path/to/deploy || exit 1
-            # create a minimal .env on the target from workflow env vars (no secrets left in repo)
+            # create a minimal .env 
             cat > .env <<'EOF'
             DB_URL=${DB_URL}
             SSL_CA_PATH=${SSL_CA_PATH}
