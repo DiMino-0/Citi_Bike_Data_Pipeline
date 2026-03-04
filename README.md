@@ -4,18 +4,30 @@
 
 **Purpose**: An end-to-end data pipeline that obtains and cleans monthly Citi Bike trip records, performs analysis on ridership patterns, station usage, and member behavior, and makes these results viewable on a web app automatically.
 
-**Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel + PDM) → PostgreSQL database → React frontend (Vite + Node.js)
+**Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel + PDM) → PostgreSQL database → React frontend (Vite + Node.js) (ascii visualization at bottom)
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend).
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). Cron job running backing server.
 
 **Currently working on:**
 
-- Backend: Systemd service for server, ingestion script w/ cron job.
-- Frontend: Navigation and server state management (TanStack Query).
+- Backend: Populating database and computed metric cols. 
+- Frontend: Visualizations/design, Navigation and server state management (TanStack Query).
 
 ## **Data Pipeline**
+
+## **Timeline**
+
+Minimal task list (task — due date):
+
+- populate database — 3-01
+- computed metrics to db - 3-02
+- Add the available historical data — 3-02
+- GH workflow for DO CICD for main — 3-07
+- design frontend — 3-10
+- domain, configure dns — 3-13
+- Benchmarking for site / https — 3-20
 
 ### **Ingestion**
 
