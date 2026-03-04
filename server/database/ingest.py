@@ -9,17 +9,18 @@ from io import TextIOWrapper
 import traceback
 import sys
 import os
-import json
 from typing import Optional, Dict
 
 
 logger = logging.getLogger(__name__)
 
-MAX_ARCHIVE_PARTS_PER_MONTH = 12
+REQUEST_HEADERS = {
+	"User-Agent": "CitiBikeDataPipeline/1.0 (+https://github.com)",
+}
 
 
 def _download_zip(url: str) -> bytes:
-	with requests.get(url, stream=True, timeout=(10, 60)) as response:
+	with requests.get(url, stream=True, timeout=(10, 60), allow_redirects=True, headers=REQUEST_HEADERS) as response:
 		response.raise_for_status()
 		chunks = []
 		for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -36,119 +37,114 @@ def _configure_logging(log_file: Optional[str] = None, level: int = logging.INFO
 	logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
 
 
-def _load_processed(path: str) -> set:
-	if os.path.exists(path):
-		try:
-			with open(path, "r", encoding="utf-8") as fh:
-				return set(json.load(fh))
-		except Exception:
-			logger.exception("Failed to read processed months file %s", path)
-			return set()
-	return set()
-
-def _save_processed(path: str, months: set) -> None:
-	tmp = f"{path}.tmp"
-	# ensure parent directory exists when saving
-	dirpath = os.path.dirname(path)
-	if dirpath:
-		os.makedirs(dirpath, exist_ok=True)
-	with open(tmp, "w", encoding="utf-8") as fh:
-		json.dump(sorted(months), fh)
-	os.replace(tmp, path)
+def _parse_year_month(value: str) -> date:
+	if not re.fullmatch(r"\d{6}", value):
+		raise ValueError(f"Invalid month '{value}'. Expected YYYYMM format.")
+	year = int(value[:4])
+	month = int(value[4:6])
+	if month < 1 or month > 12:
+		raise ValueError(f"Invalid month '{value}'. Expected month between 01 and 12.")
+	return date(year, month, 1)
 
 
-def _month_archive_urls(year_month: str, max_parts: int = MAX_ARCHIVE_PARTS_PER_MONTH) -> list[str]:
-	base = f"https://s3.amazonaws.com/tripdata/{year_month}-citibike-tripdata.zip"
-	urls = [base]
-	for index in range(1, max(1, max_parts) + 1):
-		urls.append(f"https://s3.amazonaws.com/tripdata/{year_month}-citibike-tripdata_{index}.zip")
-	return urls
+def _parse_month_range(value: str) -> list[str]:
+	match = re.fullmatch(r"\s*(\d{6})\s*(?:\.\.|:|-)\s*(\d{6})\s*", value)
+	if not match:
+		raise ValueError(f"Invalid range '{value}'. Expected format like YYYYMM..YYYYMM.")
+
+	first = _parse_year_month(match.group(1))
+	second = _parse_year_month(match.group(2))
+	start = min(first, second)
+	end = max(first, second)
+
+	months: list[str] = []
+	cursor = end
+	while cursor >= start:
+		months.append(cursor.strftime("%Y%m"))
+		cursor = (cursor.replace(day=1) - timedelta(days=1))
+	return months
 
 
-def main(processed_file: str = "processed_months.json", output_dir: Optional[str] = None, force: bool = True, months: int = 2, log_file: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+def main(
+	processed_file: str = "processed_months.json",
+	output_dir: Optional[str] = None,
+	force: bool = True,
+	months: int = 1,
+	log_file: Optional[str] = None,
+	month: Optional[str] = None,
+	month_range: Optional[str] = None,
+) -> Dict[str, pd.DataFrame]:
 	_configure_logging(log_file)
 
-	# default processed_file should live next to this module (server/database)
-	if not os.path.isabs(processed_file):
-		script_dir = os.path.dirname(__file__)
-		processed_file = os.path.join(script_dir, processed_file)
-
-	# ensure parent directory for processed_file exists
-	parent = os.path.dirname(processed_file)
-	if parent:
-		os.makedirs(parent, exist_ok=True)
-
-	# compute target months
-	today = date.today()
-	previous_month = (today.replace(day=1) - timedelta(days=1))
-	
-	# build a list of the last `months`
-	target_months = []
-	cur = previous_month
-	for _ in range(max(1, months)):
-		target_months.append(cur.strftime("%Y%m"))
-		cur = (cur.replace(day=1) - timedelta(days=1))
-
-	processed = _load_processed(processed_file)
-	dataframes: Dict[str, pd.DataFrame] = {}
-
-	# determine which months we actually expect to download (respecting `force`)
-	if force:
-		expected_to_download = set(target_months)
+	# compute target months with precedence: range > month > recent default
+	if month_range:
+		target_months = _parse_month_range(month_range)
+	elif month:
+		target_months = [_parse_year_month(month).strftime("%Y%m")]
 	else:
-		expected_to_download = set([m for m in target_months if m not in processed])
+		target_months = []
+		today = date.today()
+		cur = (today.replace(day=1) - timedelta(days=1))
+		for _ in range(max(1, months)):
+			target_months.append(cur.strftime("%Y%m"))
+			cur = (cur.replace(day=1) - timedelta(days=1))
+
+	dataframes: Dict[str, pd.DataFrame] = {}
 
 	# query bucket and process each available month
 	for yearMonth in target_months:
 		try:
-			# skip candidate months we've already processed 
-			if (yearMonth in processed) and not force:
-				logger.debug("Skipping candidate %s (already processed)", yearMonth)
-				continue
-
 			month_parts = []
 			found_any_archive = False
-			for url in _month_archive_urls(yearMonth):
-				head = requests.head(url, timeout=(10, 20), allow_redirects=True)
-				if head.status_code != 200:
+			url = f"https://s3.amazonaws.com/tripdata/{yearMonth}-citibike-tripdata.zip"
+			logger.info("Attempting download %s", url)
+			try:
+				response = _download_zip(url)
+			except requests.HTTPError as http_error:
+				status_code = http_error.response.status_code if http_error.response is not None else None
+				if status_code == 404:
+					logger.debug("Archive not found (404): %s", url)
+					continue
+				logger.warning("Archive request failed for %s (status=%s): %s", url, status_code, http_error)
+				continue
+			except requests.RequestException as request_error:
+				logger.warning("Archive request failed for %s: %s", url, request_error)
+				continue
+
+			found_any_archive = True
+			logger.debug("Downloaded %s (%d bytes)", url, len(response) if response else 0)
+
+			zip_object = io.BytesIO(response)
+			with zipfile.ZipFile(zip_object) as zf:
+				csv_files = [name for name in zf.namelist() if name.lower().endswith('.csv')]
+				if not csv_files:
+					logger.error("No CSV file found in downloaded zip archive for %s", url)
 					continue
 
-				found_any_archive = True
-				logger.info("Downloading %s", url)
-				response = _download_zip(url)
-				logger.debug("Downloaded %s (%d bytes)", url, len(response) if response else 0)
+				selected_names = [name for name in csv_files if yearMonth in name]
+				if not selected_names:
+					selected_names = list(csv_files)
 
-				zip_object = io.BytesIO(response)
-				with zipfile.ZipFile(zip_object) as zf:
-					csv_files = [name for name in zf.namelist() if name.lower().endswith('.csv')]
-					if not csv_files:
-						logger.error("No CSV file found in downloaded zip archive for %s", url)
-						continue
-
-					selected_names = [name for name in csv_files if yearMonth in name]
-					if not selected_names:
-						selected_names = list(csv_files)
-
-					for name in selected_names:
-						with zf.open(name) as csv_file:
-							try:
-								part = pd.read_csv(
-									TextIOWrapper(csv_file, encoding='utf-8', errors='strict'),
-									dtype={'end_station_id': 'str'},
-									low_memory=False,
-								)
-							except Exception as e:
-								logger.exception("Error reading CSV %s in %s: %s", name, url, e)
-								traceback.print_exc()
-								continue
-							month_parts.append(part)
+				for name in selected_names:
+					with zf.open(name) as csv_file:
+						try:
+							part = pd.read_csv(
+								TextIOWrapper(csv_file, encoding='utf-8', errors='strict'),
+								dtype={'end_station_id': 'str'},
+								low_memory=False,
+							)
+						except Exception as e:
+							logger.exception("Error reading CSV %s in %s: %s", name, url, e)
+							traceback.print_exc()
+							continue
+						month_parts.append(part)
 
 			if not found_any_archive:
 				logger.debug("No dataset archive found for month %s", yearMonth)
 				continue
 
 			if not month_parts:
-				logger.error("No readable CSV parts found for %s across split archives", yearMonth)
+				logger.error("No readable CSV parts found for %s in monthly archive", yearMonth)
 				continue
 
 			try:
@@ -158,12 +154,6 @@ def main(processed_file: str = "processed_months.json", output_dir: Optional[str
 
 			var_name = f"data{yearMonth}"
 			dataframes[var_name] = df
-
-			processed.add(yearMonth)
-			try:
-				_save_processed(processed_file, processed)
-			except Exception:
-				logger.exception("Failed to save processed months file %s", processed_file)
 
 			if output_dir:
 				os.makedirs(output_dir, exist_ok=True)
@@ -179,9 +169,6 @@ def main(processed_file: str = "processed_months.json", output_dir: Optional[str
 			continue
 
 	if not dataframes:
-		if not expected_to_download:
-			logger.info("No new Citi Bike datasets to download; all target months already processed: %s", target_months)
-			return dataframes
 		logger.error("No Citi Bike dataset found for months: %s", target_months)
 		# raise RuntimeError(f"No Citi Bike dataset found for months: {target_months}")
 	return dataframes

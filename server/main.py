@@ -53,13 +53,13 @@ async def _run_startup_seed_once() -> None:
     default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
     data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
     month = os.getenv("STARTUP_SEED_MONTH") or None
-    months = max(1, _env_int("STARTUP_SEED_MONTHS", 1))
+    month_range = os.getenv("STARTUP_SEED_RANGE") or None
     ingest_if_missing = _env_bool("STARTUP_SEED_INGEST_IF_MISSING", True)
 
     logger.info(
-        "Running startup seed: month=%s months=%d ingest_if_missing=%s data_dir=%s",
+        "Running startup seed: month=%s range=%s ingest_if_missing=%s data_dir=%s",
         month,
-        months,
+        month_range,
         ingest_if_missing,
         data_dir,
     )
@@ -69,9 +69,9 @@ async def _run_startup_seed_once() -> None:
             run_seed,
             db_url,
             data_dir,
-            month,
-            months,
-            ingest_if_missing,
+            month=month,
+            month_range=month_range,
+            ingest_if_missing=ingest_if_missing,
         )
         logger.info(
             "Startup seed finished. Files=%d Rows processed=%d Rows inserted=%d",
@@ -127,9 +127,7 @@ async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
                         run_seed,
                         db_url,
                         data_dir,
-                        None,
-                        months,
-                        ingest_if_missing,
+                        ingest_if_missing=ingest_if_missing,
                     )
                     logger.info(
                         "Daily seed finished. Files=%d Rows processed=%d Rows inserted=%d",

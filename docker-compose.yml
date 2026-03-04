@@ -24,14 +24,10 @@ services:
     env_file:
       - ./server/.env
     environment:
-      # for db insertion test
-      ENABLE_STARTUP_SEED: ${ENABLE_STARTUP_SEED:-false}
-      STARTUP_SEED_MONTH: ${STARTUP_SEED_MONTH:-}
-      STARTUP_SEED_MONTHS: ${STARTUP_SEED_MONTHS:-1}
-      STARTUP_SEED_INGEST_IF_MISSING: ${STARTUP_SEED_INGEST_IF_MISSING:-true}
-      ENABLE_MONTHLY_SEED_JOB: ${ENABLE_MONTHLY_SEED_JOB:-false}
+      SEED_DATA_DIR: ${SEED_DATA_DIR:-/app/scratch/data}
     volumes:
       - C:/Users/josep/Documents/ca-certificate.crt:/etc/ssl/certs/ca-certificate.crt:ro
+      - ./server/scratch/data:/app/scratch/data
     # depends_on:
     #   - db
     networks:
