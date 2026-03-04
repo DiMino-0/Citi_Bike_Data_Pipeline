@@ -28,6 +28,61 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r. Using default=%d", name, raw, default)
+        return default
+
+
+async def _run_startup_seed_once() -> None:
+    enabled = _env_bool("ENABLE_STARTUP_SEED", False)
+    if not enabled:
+        logger.info("Startup seed is disabled (ENABLE_STARTUP_SEED=false)")
+        return
+
+    db_url = os.getenv("DB_URL")
+    if not db_url:
+        logger.error("Startup seed skipped: DB_URL is not configured")
+        return
+
+    default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
+    data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
+    month = os.getenv("STARTUP_SEED_MONTH") or None
+    months = max(1, _env_int("STARTUP_SEED_MONTHS", 1))
+    ingest_if_missing = _env_bool("STARTUP_SEED_INGEST_IF_MISSING", True)
+
+    logger.info(
+        "Running startup seed: month=%s months=%d ingest_if_missing=%s data_dir=%s",
+        month,
+        months,
+        ingest_if_missing,
+        data_dir,
+    )
+
+    try:
+        files_count, total_rows, total_inserted = await asyncio.to_thread(
+            run_seed,
+            db_url,
+            data_dir,
+            month,
+            months,
+            ingest_if_missing,
+        )
+        logger.info(
+            "Startup seed finished. Files=%d Rows processed=%d Rows inserted=%d",
+            files_count,
+            total_rows,
+            total_inserted,
+        )
+    except Exception:
+        logger.exception("Startup seed failed")
+
+
 async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
     enabled = _env_bool("ENABLE_MONTHLY_SEED_JOB", False)
     if not enabled:
@@ -104,6 +159,7 @@ async def lifespan(_: FastAPI):
         logger.info("Database connection check at startup: ok")
     else:
         logger.warning("Database connection check at startup: unavailable")
+    await _run_startup_seed_once()
     stop_event = asyncio.Event()
     seed_task = asyncio.create_task(_daily_seed_loop(stop_event))
     yield
