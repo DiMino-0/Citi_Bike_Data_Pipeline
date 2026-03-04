@@ -50,4 +50,4 @@ EXPOSE 8000
 
 # Run the application.
 # CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=8000"]
-CMD ["sh", "-c", "gunicorn main:app --bind 0.0.0.0:8000 --worker-class uvicorn.workers.UvicornWorker --workers $(python -c \"import multiprocessing as mp; print((mp.cpu_count() * 2) + 1)\")"]
+CMD ["sh", "-c", "gunicorn main:app --bind 0.0.0.0:8000 --worker-class uvicorn.workers.UvicornWorker --workers ${WEB_CONCURRENCY:-2}"]

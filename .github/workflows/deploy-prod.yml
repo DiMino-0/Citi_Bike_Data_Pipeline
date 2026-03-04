@@ -8,9 +8,18 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     env:
+      # `secrets.*` reads from this repository/environment secrets at workflow runtime.
       DB_URL: ${{ secrets.DB_URL }}
       # The workflow will write the certificate file on the server at this path
       SSL_CA_PATH: /etc/ssl/certs/ca-certificate.crt
+      DB_ECHO: "0"
+      WEB_CONCURRENCY: "2"
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "1"
+      DB_POOL_TIMEOUT: "30"
+      DB_POOL_RECYCLE: "1800"
+      ENABLE_MONTHLY_SEED_JOB: "true"
+      SEED_DATA_DIR: "/var/lib/citibike/daily"
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +32,8 @@ jobs:
 
       - name: Save image to tar
         run: |
+          # export to a tar so we can transfer a fully-built image to a host that
+          # may not have access to this CI runner's local Docker cache/registry context.
           docker save fastapi_backend:latest -o backend.tar
 
       - name: Copy image tar to server
@@ -54,10 +65,18 @@ jobs:
             sudo chown root:root /etc/ssl/certs/ca-certificate.crt
 
             cd /path/to/deploy || exit 1
-            # create a minimal .env 
-            cat > .env <<'EOF'
-            DB_URL=${DB_URL}
-            SSL_CA_PATH=${SSL_CA_PATH}
+            # create a minimal .env using repository secrets and current config
+            cat > .env <<EOF
+            DB_URL=${{ secrets.DB_URL }}
+            SSL_CA_PATH=${{ env.SSL_CA_PATH }}
+            DB_ECHO=${{ env.DB_ECHO }}
+            WEB_CONCURRENCY=${{ env.WEB_CONCURRENCY }}
+            DB_POOL_SIZE=${{ env.DB_POOL_SIZE }}
+            DB_MAX_OVERFLOW=${{ env.DB_MAX_OVERFLOW }}
+            DB_POOL_TIMEOUT=${{ env.DB_POOL_TIMEOUT }}
+            DB_POOL_RECYCLE=${{ env.DB_POOL_RECYCLE }}
+            ENABLE_MONTHLY_SEED_JOB=${{ env.ENABLE_MONTHLY_SEED_JOB }}
+            SEED_DATA_DIR=${{ env.SEED_DATA_DIR }}
             EOF
             chmod 600 .env
 

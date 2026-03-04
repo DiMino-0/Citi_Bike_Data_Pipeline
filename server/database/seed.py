@@ -147,6 +147,9 @@ def _remove_parquet_file(parquet_file: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     default_data_dir = Path(__file__).resolve().parent.parent / "scratch" / "data"
+    env_data_dir = os.getenv("SEED_DATA_DIR")
+    if env_data_dir:
+        default_data_dir = Path(env_data_dir)
 
     parser = argparse.ArgumentParser(
         description="Seed PostgreSQL from Citi Bike monthly parquet files using SQLModel schema."

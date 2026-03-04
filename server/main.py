@@ -38,7 +38,8 @@ async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
     schedule_minute = 0
     months = 1
     ingest_if_missing = True
-    data_dir = str(Path(__file__).resolve().parent / "scratch" / "data")
+    default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
+    data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
     timezone = ZoneInfo("UTC")
 
     logger.info(

@@ -25,6 +25,22 @@ def _read_bool_env(DB_ECHO: str, default: bool = False) -> bool:
     return val.lower() in ("1", "true", "yes", "on")
 
 
+def _read_int_env(name: str, default: int, minimum: int | None = None) -> int:
+    """Return integer environment variable with fallback and optional lower bound."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default=%d", name, raw, default)
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning("%s=%d below minimum=%d; using minimum", name, value, minimum)
+        return minimum
+    return value
+
+
 def _create_ssl_context() -> ssl.SSLContext | None:
     """Create SSL context if SSL_CA_PATH is set; otherwise return None."""
     cafile = os.getenv("SSL_CA_PATH")
@@ -79,7 +95,28 @@ async def init_engine(db_url: Optional[str] = None, echo: Optional[bool] = None)
             connect_args = {"ssl": ssl_ctx} if ssl_ctx else {}
             if echo is None:
                 echo = _read_bool_env("DB_ECHO", False)
-            _engine = create_async_engine(db_url, echo=echo, connect_args=connect_args)
+            pool_size = _read_int_env("DB_POOL_SIZE", 2, minimum=1)
+            max_overflow = _read_int_env("DB_MAX_OVERFLOW", 1, minimum=0)
+            pool_timeout = _read_int_env("DB_POOL_TIMEOUT", 30, minimum=1)
+            pool_recycle = _read_int_env("DB_POOL_RECYCLE", 1800, minimum=0)
+            logger.info(
+                "DB pool config: pool_size=%d max_overflow=%d pool_timeout=%d pool_recycle=%d",
+                pool_size,
+                max_overflow,
+                pool_timeout,
+                pool_recycle,
+            )
+
+            _engine = create_async_engine(
+                db_url,
+                echo=echo,
+                connect_args=connect_args,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
+                pool_timeout=pool_timeout,
+                pool_pre_ping=True,
+                pool_recycle=pool_recycle,
+            )
             _async_session_local = async_sessionmaker(bind=_engine, expire_on_commit=False)
 
 # Accessor for the async engine

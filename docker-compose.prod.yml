@@ -7,10 +7,22 @@ services:
       DB_URL: ${DB_URL}
       SSL_CA_PATH: ${SSL_CA_PATH}
       DB_ECHO: ${DB_ECHO:-0}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-2}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-1}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+      ENABLE_MONTHLY_SEED_JOB: ${ENABLE_MONTHLY_SEED_JOB:-true}
+      SEED_DATA_DIR: ${SEED_DATA_DIR:-/var/lib/citibike/daily}
+    volumes:
+      - citibike_daily_data:/var/lib/citibike/daily
     # No host path mounts: the deployment workflow places the certificate on the server
     # and sets `SSL_CA_PATH` to the container-accessible path (e.g. /etc/ssl/certs/ca-certificate.crt).
     networks:
       - app-network
+
+volumes:
+  citibike_daily_data:
 
 networks:
   app-network:
