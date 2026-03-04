@@ -1,0 +1,112 @@
+name: Build and Deploy (prod)
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      # `secrets.*` reads from this repository/environment secrets at workflow runtime.
+      DB_URL: ${{ secrets.DB_URL }}
+      # In-container cert path consumed by the backend
+      SSL_CA_PATH: /etc/ssl/certs/ca-certificate.crt
+      DB_ECHO: "0"
+      WEB_CONCURRENCY: "2"
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "1"
+      DB_POOL_TIMEOUT: "30"
+      DB_POOL_RECYCLE: "1800"
+      ENABLE_MONTHLY_SEED_JOB: "true"
+      SEED_DATA_DIR: "/var/lib/citibike/daily"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build backend image
+        run: |
+          docker build -t fastapi_backend:latest ./server
+
+      - name: Save image to tar
+        run: |
+          # export to a tar so we can transfer a fully-built image to a host that
+          # may not have access to this CI runner's local Docker cache/registry context.
+          docker save fastapi_backend:latest -o backend.tar
+
+      - name: Copy image tar to server
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Using explicit workspace-relative source path to avoid ambiguity
+          source: ./backend.tar
+          target: /tmp/backend.tar
+
+      - name: Remove local image tar
+        run: rm -f backend.tar
+
+      - name: Deploy to host via SSH
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |-
+            set -euo pipefail
+            DEPLOY_DIR=/root/app/${{ github.event.repository.name }}
+            REPO_URL=https://github.com/${{ github.repository }}.git
+            BRANCH=${{ github.ref_name }}
+            SSL_CA_SOURCE_FILE="$DEPLOY_DIR/certs/ca-certificate.crt"
+
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              mkdir -p "$(dirname "$DEPLOY_DIR")"
+              git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$DEPLOY_DIR"
+            else
+              cd "$DEPLOY_DIR"
+              git fetch origin "$BRANCH"
+              git reset --hard "origin/$BRANCH"
+              git clean -fd -e certs/
+            fi
+
+            cd "$DEPLOY_DIR" || exit 1
+
+            # write/update source cert under deploy directory
+            mkdir -p "$DEPLOY_DIR/certs"
+            echo "${{ secrets.SSL_CA_B64 }}" | base64 --decode | sudo tee "$SSL_CA_SOURCE_FILE" > /dev/null
+            sudo chmod 600 "$SSL_CA_SOURCE_FILE"
+            sudo chown root:root "$SSL_CA_SOURCE_FILE"
+
+            # create compose .env with required secret + host cert source path
+            cat > .env <<EOF
+            DB_URL=${{ secrets.DB_URL }}
+            SSL_CA_SOURCE_FILE=$SSL_CA_SOURCE_FILE
+            EOF
+            chmod 600 .env
+
+            # create backend non-secret env file on server
+            mkdir -p "$DEPLOY_DIR/server"
+            cat > "$DEPLOY_DIR/server/.env" <<EOF
+            SSL_CA_PATH=${{ env.SSL_CA_PATH }}
+            DB_ECHO=${{ env.DB_ECHO }}
+            WEB_CONCURRENCY=${{ env.WEB_CONCURRENCY }}
+            DB_POOL_SIZE=${{ env.DB_POOL_SIZE }}
+            DB_MAX_OVERFLOW=${{ env.DB_MAX_OVERFLOW }}
+            DB_POOL_TIMEOUT=${{ env.DB_POOL_TIMEOUT }}
+            DB_POOL_RECYCLE=${{ env.DB_POOL_RECYCLE }}
+            ENABLE_MONTHLY_SEED_JOB=${{ env.ENABLE_MONTHLY_SEED_JOB }}
+            SEED_DATA_DIR=${{ env.SEED_DATA_DIR }}
+            EOF
+            chmod 600 "$DEPLOY_DIR/server/.env"
+
+            # Load the transferred image and remove the tar
+            if [ -f /tmp/backend.tar ]; then
+              sudo docker load -i /tmp/backend.tar
+              rm /tmp/backend.tar
+            fi
+
+            # Bring up the stack using the prod override (uses the loaded image)
+            sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans

@@ -1,9 +1,13 @@
 import os
 import logging
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from database.db import check_db_connection, get_engine, get_session
+from database.seed import run_seed
 from fastapi import FastAPI, HTTPException
 import uvicorn
 
@@ -15,6 +19,130 @@ if not logging.getLogger().handlers:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r. Using default=%d", name, raw, default)
+        return default
+
+
+async def _run_startup_seed_once() -> None:
+    enabled = _env_bool("ENABLE_STARTUP_SEED", False)
+    if not enabled:
+        logger.info("Startup seed is disabled (ENABLE_STARTUP_SEED=false)")
+        return
+
+    db_url = os.getenv("DB_URL")
+    if not db_url:
+        logger.error("Startup seed skipped: DB_URL is not configured")
+        return
+
+    default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
+    data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
+    month = os.getenv("STARTUP_SEED_MONTH") or None
+    month_range = os.getenv("STARTUP_SEED_RANGE") or None
+    ingest_if_missing = _env_bool("STARTUP_SEED_INGEST_IF_MISSING", True)
+
+    logger.info(
+        "Running startup seed: month=%s range=%s ingest_if_missing=%s data_dir=%s",
+        month,
+        month_range,
+        ingest_if_missing,
+        data_dir,
+    )
+
+    try:
+        files_count, total_rows, total_inserted = await asyncio.to_thread(
+            run_seed,
+            db_url,
+            data_dir,
+            month=month,
+            month_range=month_range,
+            ingest_if_missing=ingest_if_missing,
+        )
+        logger.info(
+            "Startup seed finished. Files=%d Rows processed=%d Rows inserted=%d",
+            files_count,
+            total_rows,
+            total_inserted,
+        )
+    except Exception:
+        logger.exception("Startup seed failed")
+
+
+async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
+    enabled = _env_bool("ENABLE_MONTHLY_SEED_JOB", False)
+    if not enabled:
+        logger.info("Daily seed job is disabled (ENABLE_MONTHLY_SEED_JOB=false)")
+        return
+
+    schedule_hour = 3
+    schedule_minute = 0
+    months = 1
+    ingest_if_missing = True
+    default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
+    data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
+    timezone = ZoneInfo("UTC")
+
+    logger.info(
+        "Daily seed schedule enabled: hour=%d minute=%d tz=%s months=%d ingest_if_missing=%s data_dir=%s",
+        schedule_hour,
+        schedule_minute,
+        timezone.key,
+        months,
+        ingest_if_missing,
+        data_dir,
+    )
+
+    last_triggered_date: str | None = None
+    while not stop_event.is_set():
+        now = datetime.now(timezone)
+        current_date = now.strftime("%Y%m%d")
+        should_run = (
+            now.hour == schedule_hour
+            and now.minute == schedule_minute
+        )
+
+        if should_run and last_triggered_date != current_date:
+            db_url = os.getenv("DB_URL")
+            if not db_url:
+                logger.error("Daily seed skipped: DB_URL is not configured")
+            else:
+                logger.info("Starting daily seed job for date=%s", current_date)
+                try:
+                    files_count, total_rows, total_inserted = await asyncio.to_thread(
+                        run_seed,
+                        db_url,
+                        data_dir,
+                        ingest_if_missing=ingest_if_missing,
+                    )
+                    logger.info(
+                        "Daily seed finished. Files=%d Rows processed=%d Rows inserted=%d",
+                        files_count,
+                        total_rows,
+                        total_inserted,
+                    )
+                except Exception:
+                    logger.exception("Daily seed job failed")
+            last_triggered_date = current_date
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=20)
+        except asyncio.TimeoutError:
+            continue
 
 # Load local .env from package directory (`server/.env`) if present
 dotenv_path = Path(__file__).resolve().parent / ".env"
@@ -29,7 +157,16 @@ async def lifespan(_: FastAPI):
         logger.info("Database connection check at startup: ok")
     else:
         logger.warning("Database connection check at startup: unavailable")
+    await _run_startup_seed_once()
+    stop_event = asyncio.Event()
+    seed_task = asyncio.create_task(_daily_seed_loop(stop_event))
     yield
+    stop_event.set()
+    seed_task.cancel()
+    try:
+        await seed_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Server shutdown initiated")
 
 
