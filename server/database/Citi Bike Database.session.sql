@@ -1,5 +1,13 @@
 SHOW search_path;
 
+-- Quick table existence check before running analytics queries.
+SELECT
+	to_regclass('public.citibike_trips') AS table_name,
+	CASE
+		WHEN to_regclass('public.citibike_trips') IS NULL THEN 'MISSING'
+		ELSE 'EXISTS'
+	END AS table_status;
+
 -- ------------------------------------------------------------
 -- Month filtering / sorting
 -- ------------------------------------------------------------
