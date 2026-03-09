@@ -8,27 +8,16 @@
 
 **Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). Cron job running backing server.
-
-**Currently working on:**
-
-- Backend: Populating database and computed metric cols. 
-- Frontend: Visualizations/design, Navigation and server state management (TanStack Query).
-
-## **Data Pipeline**
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). App service scheduled and running on backing server.
 
 ## **Timeline**
 
-Minimal task list (task — due date):
-
-- populate database — 3-01
-- computed metrics to db - 3-02
-- Add the available historical data — 3-02
-- GH workflow for DO CICD for main — 3-07
+- GH workflow for DO CICD for main — 3-09
 - design frontend — 3-10
 - domain, configure dns — 3-13
 - Benchmarking for site / https — 3-20
 
+## **Data Pipeline**
 ### **Ingestion**
 
 Fetches monthly data from S3:
@@ -98,7 +87,7 @@ PostgreSQL 18 database is being used to hold all the data.
 
 ## **API**
 
-FastAPI with Uvicorn ASGI server for concurrent connections.
+FastAPI with Uvicorn ASGI server for concurrent connections following RESTful architecture. 
 
 **Sample endpoints**:
 
@@ -109,20 +98,20 @@ FastAPI with Uvicorn ASGI server for concurrent connections.
 
 ## **Frontend**
 
-React + Vite stack with data visualization components. The react app makes HTTP requests to FastAPI endpoints, receives JSON responses in turn.
+React + Vite stack with data visualization components. 
 
 ## **Middleware**
 
 - Nginx reverse proxy routes frontend requests to the FastAPI backend.
+
+## **Quick Start (Windows)**
 
 ## **Prerequisites**
 
 - Python 3.13+
 - PostgreSQL 14+
 - Node.js 18+ (frontend)
-
-## **Quick Start (Windows)**
-
+- 
 First clone the repo and move to the root dir, then follow the below steps.
 
 1. Create and activate a virtual environment using venv (optional but recommended):
