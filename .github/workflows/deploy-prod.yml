@@ -10,6 +10,10 @@ jobs:
     env:
       # `secrets.*` reads from this repository/environment secrets at workflow runtime.
       DB_URL: ${{ secrets.DB_URL }}
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSL_CA_B64: ${{ secrets.SSL_CA_B64 }}
       # In-container cert path consumed by the backend
       SSL_CA_PATH: /etc/ssl/certs/ca-certificate.crt
       DB_ECHO: "0"
@@ -39,9 +43,9 @@ jobs:
       - name: Copy image tar to server
         uses: appleboy/scp-action@v0.1.4
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USERNAME }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
           # Using explicit workspace-relative source path to avoid ambiguity
           source: ./backend.tar
           target: /tmp/backend.tar
@@ -52,9 +56,9 @@ jobs:
       - name: Deploy to host via SSH
         uses: appleboy/ssh-action@v0.1.7
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USERNAME }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |-
             set -euo pipefail
             DEPLOY_DIR=/root/app/${{ github.event.repository.name }}
@@ -76,13 +80,13 @@ jobs:
 
             # write/update source cert under deploy directory
             mkdir -p "$DEPLOY_DIR/certs"
-            echo "${{ secrets.SSL_CA_B64 }}" | base64 --decode | sudo tee "$SSL_CA_SOURCE_FILE" > /dev/null
+            echo "${{ env.SSL_CA_B64 }}" | base64 --decode | sudo tee "$SSL_CA_SOURCE_FILE" > /dev/null
             sudo chmod 600 "$SSL_CA_SOURCE_FILE"
             sudo chown root:root "$SSL_CA_SOURCE_FILE"
 
             # create compose .env with required secret + host cert source path
             cat > .env <<EOF
-            DB_URL=${{ secrets.DB_URL }}
+            DB_URL=${{ env.DB_URL }}
             SSL_CA_SOURCE_FILE=$SSL_CA_SOURCE_FILE
             EOF
             chmod 600 .env

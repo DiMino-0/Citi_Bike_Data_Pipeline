@@ -66,9 +66,7 @@ def _parse_month_range(value: str) -> list[str]:
 
 
 def main(
-	processed_file: str = "processed_months.json",
 	output_dir: Optional[str] = None,
-	force: bool = True,
 	months: int = 1,
 	log_file: Optional[str] = None,
 	month: Optional[str] = None,
