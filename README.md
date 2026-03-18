@@ -12,10 +12,10 @@
 
 ## **Timeline**
 
-- GH workflow for DO CICD for main — 3-09
-- design frontend — 3-10
-- domain, configure dns — 3-13
-- Benchmarking for site / https — 3-20
+- GH workflow for DO CICD for main — debug
+- refine frontend — 3-20
+- domain, configure dns — 3-22
+- Benchmarking for site / https — 3-25
 
 ## **Data Pipeline**
 ### **Ingestion**
