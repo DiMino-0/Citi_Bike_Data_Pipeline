@@ -27,7 +27,7 @@ volumes:
 
 secrets:
   db-ca-cert:
-    file: ${SSL_CA_SOURCE_FILE
+    file: ${SSL_CA_SOURCE_FILE}
 
 networks:
   app-network:

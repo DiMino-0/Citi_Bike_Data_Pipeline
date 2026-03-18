@@ -1,42 +1,106 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+.dashboard {
+  display: grid;
+  gap: 1rem;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.dashboard-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
+.dashboard-header p {
+  margin: 0.3rem 0 0;
+  color: #4b5563;
+}
+
+.status-loading,
+.status-error {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.status-loading {
+  color: #2563eb;
+}
+
+.status-error {
+  color: #b91c1c;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.filters label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.filters select {
+  min-width: 10rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  background: #fff;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.kpis article,
+.panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  background: #fff;
+  padding: 0.9rem;
+}
+
+.kpis h2,
+.panel h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.kpis strong {
+  display: block;
+  margin-top: 0.45rem;
+  font-size: 1.35rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.65rem;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  padding: 0.5rem 0.35rem;
+}
+
+th {
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+@media (max-width: 820px) {
+  .kpis {
+    grid-template-columns: 1fr;
   }
-  to {
-    transform: rotate(360deg);
+
+  table {
+    font-size: 0.82rem;
   }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
-}
-
-.card {
-  padding: 2em;
-}
-
-.read-the-docs {
-  color: #888;
 }

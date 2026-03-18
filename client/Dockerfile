@@ -76,8 +76,8 @@ COPY --from=build /usr/src/app/dist /usr/share/nginx/html
 # Copy our custom Nginx configuration file
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Expose port 5171 for incoming traffic
-EXPOSE 5171
+# Expose port 80 for incoming traffic
+EXPOSE 80
 
 # The default Nginx command will start the server
 CMD ["nginx", "-g", "daemon off;"]

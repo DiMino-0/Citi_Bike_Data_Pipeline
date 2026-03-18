@@ -1,13 +1,13 @@
 ###
-GET http://127.0.0.1:8000/
+GET http://127.0.0.1:3000/
 Accept: application/json
 ###
-GET http://127.0.0.1:8000/db/health
+GET http://127.0.0.1:3000/db/health
 Accept: application/json
 ###
-GET http://127.0.0.1:8000/engine/info
+GET http://127.0.0.1:3000/engine/info
 Accept: application/json
 ###
-GET http://127.0.0.1:8000/session/info
+GET http://127.0.0.1:3000/session/info
 Accept: application/json
 ###

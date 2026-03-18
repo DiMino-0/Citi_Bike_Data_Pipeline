@@ -40,8 +40,8 @@ services:
       dockerfile: Dockerfile
     container_name: react_frontend
     ports:
-      # Map port 3000 on host machine to port 5171 inside the container (where Nginx is listening)
-      - "3000:5171"
+      # Map port 3000 on host machine to port 80 inside the container (where Nginx is listening)
+      - "3000:80"
     depends_on:
       - backend
     networks:

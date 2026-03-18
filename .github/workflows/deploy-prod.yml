@@ -23,6 +23,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate required secrets are present
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSL_CA_B64: ${{ secrets.SSL_CA_B64 }}
+        run: |
+          set -euo pipefail
+          for name in DB_URL SSH_HOST SSH_USERNAME SSH_PRIVATE_KEY SSL_CA_B64; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name"
+              exit 1
+            fi
+          done
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
@@ -51,10 +67,23 @@ jobs:
 
       - name: Deploy to host via SSH
         uses: appleboy/ssh-action@v0.1.7
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+          SSL_CA_B64: ${{ secrets.SSL_CA_B64 }}
+          SSL_CA_PATH: ${{ env.SSL_CA_PATH }}
+          DB_ECHO: ${{ env.DB_ECHO }}
+          WEB_CONCURRENCY: ${{ env.WEB_CONCURRENCY }}
+          DB_POOL_SIZE: ${{ env.DB_POOL_SIZE }}
+          DB_MAX_OVERFLOW: ${{ env.DB_MAX_OVERFLOW }}
+          DB_POOL_TIMEOUT: ${{ env.DB_POOL_TIMEOUT }}
+          DB_POOL_RECYCLE: ${{ env.DB_POOL_RECYCLE }}
+          ENABLE_MONTHLY_SEED_JOB: ${{ env.ENABLE_MONTHLY_SEED_JOB }}
+          SEED_DATA_DIR: ${{ env.SEED_DATA_DIR }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DB_URL,SSL_CA_B64,SSL_CA_PATH,DB_ECHO,WEB_CONCURRENCY,DB_POOL_SIZE,DB_MAX_OVERFLOW,DB_POOL_TIMEOUT,DB_POOL_RECYCLE,ENABLE_MONTHLY_SEED_JOB,SEED_DATA_DIR
           script: |-
             set -euo pipefail
             DEPLOY_DIR=/root/app/${{ github.event.repository.name }}
@@ -76,13 +105,13 @@ jobs:
 
             # write/update source cert under deploy directory
             mkdir -p "$DEPLOY_DIR/certs"
-            echo "${{ secrets.SSL_CA_B64 }}" | base64 --decode | sudo tee "$SSL_CA_SOURCE_FILE" > /dev/null
+            echo "$SSL_CA_B64" | base64 --decode | sudo tee "$SSL_CA_SOURCE_FILE" > /dev/null
             sudo chmod 600 "$SSL_CA_SOURCE_FILE"
             sudo chown root:root "$SSL_CA_SOURCE_FILE"
 
             # create compose .env with required secret + host cert source path
             cat > .env <<EOF
-            DB_URL=${{ secrets.DB_URL }}
+            DB_URL=$DB_URL
             SSL_CA_SOURCE_FILE=$SSL_CA_SOURCE_FILE
             EOF
             chmod 600 .env
@@ -90,15 +119,15 @@ jobs:
             # create backend non-secret env file on server
             mkdir -p "$DEPLOY_DIR/server"
             cat > "$DEPLOY_DIR/server/.env" <<EOF
-            SSL_CA_PATH=${{ env.SSL_CA_PATH }}
-            DB_ECHO=${{ env.DB_ECHO }}
-            WEB_CONCURRENCY=${{ env.WEB_CONCURRENCY }}
-            DB_POOL_SIZE=${{ env.DB_POOL_SIZE }}
-            DB_MAX_OVERFLOW=${{ env.DB_MAX_OVERFLOW }}
-            DB_POOL_TIMEOUT=${{ env.DB_POOL_TIMEOUT }}
-            DB_POOL_RECYCLE=${{ env.DB_POOL_RECYCLE }}
-            ENABLE_MONTHLY_SEED_JOB=${{ env.ENABLE_MONTHLY_SEED_JOB }}
-            SEED_DATA_DIR=${{ env.SEED_DATA_DIR }}
+            SSL_CA_PATH=$SSL_CA_PATH
+            DB_ECHO=$DB_ECHO
+            WEB_CONCURRENCY=$WEB_CONCURRENCY
+            DB_POOL_SIZE=$DB_POOL_SIZE
+            DB_MAX_OVERFLOW=$DB_MAX_OVERFLOW
+            DB_POOL_TIMEOUT=$DB_POOL_TIMEOUT
+            DB_POOL_RECYCLE=$DB_POOL_RECYCLE
+            ENABLE_MONTHLY_SEED_JOB=$ENABLE_MONTHLY_SEED_JOB
+            SEED_DATA_DIR=$SEED_DATA_DIR
             EOF
             chmod 600 "$DEPLOY_DIR/server/.env"
 
