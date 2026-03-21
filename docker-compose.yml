@@ -1,21 +1,21 @@
 services:
   # The PostgreSQL Database Service
-  # db:
-  #   image: postgres:15-alpine
-  #   container_name: postgres_db
-  #   env_file:
-  #     - ./server/.env
-  #   environment:
-  #     POSTGRES_USER: ${POSTGRES_USER:-citibike}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citibike}
-  #     POSTGRES_DB: ${POSTGRES_DB:-citibike}
-  #   volumes:
-  #     # This persists database data on your local machine
-  #     - postgres_data:/var/lib/postgresql/data
-  #     # This runs our initialization script on the first startup
-  #     - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql
-  #   networks:
-  #     - app-network
+  db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    env_file:
+      - ./server/.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-citibike}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citibike}
+      POSTGRES_DB: ${POSTGRES_DB:-citibike}
+    volumes:
+      # This persists database data on your local machine
+      - postgres_data:/var/lib/postgresql/data
+      # This runs our initialization script on the first startup
+      - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql
+    networks:
+      - app-network
 
   # FastAPI Backend Service
   backend:
@@ -40,8 +40,8 @@ services:
       dockerfile: Dockerfile
     container_name: react_frontend
     ports:
-      # Map port 3000 on host machine to port 5171 inside the container (where Nginx is listening)
-      - "3000:5171"
+      # Map port 3000 on host machine to port 80 inside the container (where Nginx is listening)
+      - "3000:80"
     depends_on:
       - backend
     networks:
@@ -52,6 +52,6 @@ networks:
   app-network:
     driver: bridge
 
-# volumes:
-#   postgres_data:
-#     driver: local
+volumes:
+  postgres_data:
+    driver: local

@@ -8,7 +8,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from database.db import check_db_connection, get_engine, get_session
 from database.seed import run_seed
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 import uvicorn
 
 
@@ -199,6 +201,139 @@ async def session_info():
     # iterate the async generator and use the first yielded session
     async for session in get_session():
         return {"session_info": str(session)}
+
+
+@app.get("/api/analytics/monthly-trip-counts")
+async def analytics_monthly_trip_counts(session: AsyncSession = Depends(get_session)):
+    query = text(
+        """
+        SELECT trip_month, COUNT(*) AS trip_count
+        FROM citibike_trips
+        GROUP BY trip_month
+        ORDER BY trip_month
+        """
+    )
+    result = await session.execute(query)
+    rows = result.mappings().all()
+    return [
+        {
+            "tripMonth": row["trip_month"],
+            "tripCount": int(row["trip_count"]),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/api/analytics/lost-bike-fee-summary")
+async def analytics_lost_bike_fee_summary(
+    month: str = Query(..., min_length=6, max_length=6),
+    rider: str = Query("all", pattern="^(all|member|casual)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    query = text(
+        """
+        WITH durations AS (
+            SELECT
+                trip_month,
+                LOWER(member_casual) AS member_casual,
+                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60))::int AS duration_min
+            FROM citibike_trips
+            WHERE ended_at IS NOT NULL
+              AND started_at IS NOT NULL
+              AND trip_month = :month
+              AND (:rider = 'all' OR LOWER(member_casual) = :rider)
+        )
+        SELECT
+            trip_month,
+            member_casual,
+            COUNT(*) FILTER (WHERE duration_min > 1440) AS lost_bike_fee_trips,
+            COUNT(*) AS total_trips
+        FROM durations
+        GROUP BY trip_month, member_casual
+        ORDER BY member_casual
+        """
+    )
+    result = await session.execute(query, {"month": month, "rider": rider})
+    rows = result.mappings().all()
+    return [
+        {
+            "tripMonth": row["trip_month"],
+            "memberCasual": row["member_casual"],
+            "lostBikeFeeTrips": int(row["lost_bike_fee_trips"]),
+            "totalTrips": int(row["total_trips"]),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/api/analytics/duration-buckets")
+async def analytics_duration_buckets(
+    month: str = Query(..., min_length=6, max_length=6),
+    rider: str = Query("all", pattern="^(all|member|casual)$"),
+    bucket_minutes: int = Query(5, ge=1, le=60),
+    session: AsyncSession = Depends(get_session),
+):
+    query = text(
+        """
+        WITH params AS (
+            SELECT :bucket_minutes::int AS bucket_minutes, 1440::int AS max_minutes
+        ), durations AS (
+            SELECT
+                trip_month,
+                LOWER(member_casual) AS member_casual,
+                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60))::int AS duration_min
+            FROM citibike_trips
+            WHERE ended_at IS NOT NULL
+              AND started_at IS NOT NULL
+              AND trip_month = :month
+              AND (:rider = 'all' OR LOWER(member_casual) = :rider)
+        ), bucketed AS (
+            SELECT
+                d.trip_month,
+                d.member_casual,
+                d.duration_min,
+                p.max_minutes,
+                CASE
+                    WHEN d.duration_min > p.max_minutes THEN 'LOST_BIKE_FEE'
+                    ELSE CONCAT(
+                        LPAD(((d.duration_min / p.bucket_minutes) * p.bucket_minutes)::text, 4, '0'),
+                        '-',
+                        LPAD((((d.duration_min / p.bucket_minutes) * p.bucket_minutes) + p.bucket_minutes - 1)::text, 4, '0'),
+                        ' min'
+                    )
+                END AS duration_bucket
+            FROM durations d
+            CROSS JOIN params p
+        )
+        SELECT
+            trip_month,
+            member_casual,
+            duration_bucket,
+            COUNT(*) AS trips,
+            BOOL_OR(duration_min > max_minutes) AS lost_bike_fee_flag
+        FROM bucketed
+        GROUP BY trip_month, member_casual, duration_bucket
+        ORDER BY
+            member_casual,
+            CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
+            duration_bucket
+        """
+    )
+    result = await session.execute(
+        query,
+        {"month": month, "rider": rider, "bucket_minutes": bucket_minutes},
+    )
+    rows = result.mappings().all()
+    return [
+        {
+            "tripMonth": row["trip_month"],
+            "memberCasual": row["member_casual"],
+            "bucket": row["duration_bucket"],
+            "trips": int(row["trips"]),
+            "lostBikeFeeFlag": bool(row["lost_bike_fee_flag"]),
+        }
+        for row in rows
+    ]
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server on 127.0.0.1:8000")
