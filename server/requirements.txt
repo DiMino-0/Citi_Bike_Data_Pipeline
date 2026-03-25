@@ -36,7 +36,7 @@ packaging==26.0
 pandas==3.0.1
 patsy==1.0.2
 pillow==12.1.1
-psycopg2==2.9.11
+psycopg2-binary==2.9.11
 pydantic==2.12.5
 pydantic-extra-types==2.11.0
 pydantic-settings==2.12.0
