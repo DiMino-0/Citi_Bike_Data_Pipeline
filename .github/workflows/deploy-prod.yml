@@ -90,7 +90,7 @@ jobs:
           key: ${{ env.SSH_PRIVATE_KEY }}
           script: |-
             set -euo pipefail
-            DEPLOY_DIR=/root/app/${{ github.event.repository.name }}
+            DEPLOY_DIR=/~/app/${{ github.event.repository.name }}
             REPO_URL=https://github.com/${{ github.repository }}.git
             BRANCH=${{ github.ref_name }}
             SSL_CA_SOURCE_FILE="$DEPLOY_DIR/certs/ca-certificate.crt"
