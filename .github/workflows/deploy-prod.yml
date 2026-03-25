@@ -90,7 +90,7 @@ jobs:
           key: ${{ env.SSH_PRIVATE_KEY }}
           script: |-
             set -euo pipefail
-            DEPLOY_DIR=/root/app/${{ github.event.repository.name }}
+            DEPLOY_DIR=/~/app/${{ github.event.repository.name }}
             REPO_URL=https://github.com/${{ github.repository }}.git
             BRANCH=${{ github.ref_name }}
             SSL_CA_SOURCE_FILE="$DEPLOY_DIR/certs/ca-certificate.crt"
@@ -123,15 +123,15 @@ jobs:
             # create backend non-secret env file on server
             mkdir -p "$DEPLOY_DIR/server"
             cat > "$DEPLOY_DIR/server/.env" <<EOF
-            SSL_CA_PATH=$SSL_CA_PATH
-            DB_ECHO=$DB_ECHO
-            WEB_CONCURRENCY=$WEB_CONCURRENCY
-            DB_POOL_SIZE=$DB_POOL_SIZE
-            DB_MAX_OVERFLOW=$DB_MAX_OVERFLOW
-            DB_POOL_TIMEOUT=$DB_POOL_TIMEOUT
-            DB_POOL_RECYCLE=$DB_POOL_RECYCLE
-            ENABLE_MONTHLY_SEED_JOB=$ENABLE_MONTHLY_SEED_JOB
-            SEED_DATA_DIR=$SEED_DATA_DIR
+            SSL_CA_PATH=${{ env.SSL_CA_PATH }}
+            DB_ECHO=${{ env.DB_ECHO }}
+            WEB_CONCURRENCY=${{ env.WEB_CONCURRENCY }}
+            DB_POOL_SIZE=${{ env.DB_POOL_SIZE }}
+            DB_MAX_OVERFLOW=${{ env.DB_MAX_OVERFLOW }}
+            DB_POOL_TIMEOUT=${{ env.DB_POOL_TIMEOUT }}
+            DB_POOL_RECYCLE=${{ env.DB_POOL_RECYCLE }}
+            ENABLE_MONTHLY_SEED_JOB=${{ env.ENABLE_MONTHLY_SEED_JOB }}
+            SEED_DATA_DIR=${{ env.SEED_DATA_DIR }}
             EOF
             chmod 600 "$DEPLOY_DIR/server/.env"
 
