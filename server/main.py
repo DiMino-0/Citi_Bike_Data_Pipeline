@@ -275,9 +275,7 @@ async def analytics_duration_buckets(
 ):
     query = text(
         """
-        WITH params AS (
-            SELECT :bucket_minutes::int AS bucket_minutes, 1440::int AS max_minutes
-        ), durations AS (
+        WITH durations AS (
             SELECT
                 trip_month,
                 LOWER(member_casual) AS member_casual,
@@ -292,25 +290,23 @@ async def analytics_duration_buckets(
                 d.trip_month,
                 d.member_casual,
                 d.duration_min,
-                p.max_minutes,
                 CASE
-                    WHEN d.duration_min > p.max_minutes THEN 'LOST_BIKE_FEE'
+                    WHEN d.duration_min > 1440 THEN 'LOST_BIKE_FEE'
                     ELSE CONCAT(
-                        LPAD(((d.duration_min / p.bucket_minutes) * p.bucket_minutes)::text, 4, '0'),
+                        LPAD(((d.duration_min / :bucket_minutes) * :bucket_minutes)::text, 4, '0'),
                         '-',
-                        LPAD((((d.duration_min / p.bucket_minutes) * p.bucket_minutes) + p.bucket_minutes - 1)::text, 4, '0'),
+                        LPAD((((d.duration_min / :bucket_minutes) * :bucket_minutes) + :bucket_minutes - 1)::text, 4, '0'),
                         ' min'
                     )
                 END AS duration_bucket
             FROM durations d
-            CROSS JOIN params p
         )
         SELECT
             trip_month,
             member_casual,
             duration_bucket,
             COUNT(*) AS trips,
-            BOOL_OR(duration_min > max_minutes) AS lost_bike_fee_flag
+            (COUNT(*) FILTER (WHERE duration_min > 1440) > 0) AS lost_bike_fee_flag
         FROM bucketed
         GROUP BY trip_month, member_casual, duration_bucket
         ORDER BY
