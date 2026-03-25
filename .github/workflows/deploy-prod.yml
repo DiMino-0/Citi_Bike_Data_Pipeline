@@ -7,6 +7,7 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: production-secrets
     env:
       # `secrets.*` reads from this repository/environment secrets at workflow runtime.
       DB_URL: ${{ secrets.DB_URL }}
