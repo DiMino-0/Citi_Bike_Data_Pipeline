@@ -61,11 +61,14 @@ jobs:
         uses: appleboy/scp-action@v0.1.4
         with:
           host: ${{ env.SSH_HOST }}
+          port: 22
           username: ${{ env.SSH_USERNAME }}
           key: ${{ env.SSH_PRIVATE_KEY }}
+          timeout: 120s
+          debug: true
           # Using explicit workspace-relative source path to avoid ambiguity
           source: ./backend.tar
-          target: /tmp/backend.tar
+          target: /tmp/
 
       - name: Remove local image tar
         run: rm -f backend.tar
@@ -86,11 +89,15 @@ jobs:
           SEED_DATA_DIR: ${{ env.SEED_DATA_DIR }}
         with:
           host: ${{ env.SSH_HOST }}
+          port: 22
           username: ${{ env.SSH_USERNAME }}
           key: ${{ env.SSH_PRIVATE_KEY }}
+          timeout: 120s
+          command_timeout: 30m
+          debug: true
           script: |-
             set -euo pipefail
-            DEPLOY_DIR=/~/app/${{ github.event.repository.name }}
+            DEPLOY_DIR=$HOME/app/${{ github.event.repository.name }}
             REPO_URL=https://github.com/${{ github.repository }}.git
             BRANCH=${{ github.ref_name }}
             SSL_CA_SOURCE_FILE="$DEPLOY_DIR/certs/ca-certificate.crt"
