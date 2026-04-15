@@ -15,13 +15,13 @@ SELECT
 -- 1) Most recent trips first (all months)
 SELECT ride_id, trip_month, started_at, ended_at, member_casual
 FROM citibike_trips
-ORDER BY trip_month DESC, started_at DESC
+ORDER BY trip_month ASC, started_at ASC
 LIMIT 100;
 
 -- 2) Trips for a single month (YYYYMM)
 SELECT ride_id, trip_month, started_at, ended_at, member_casual
 FROM citibike_trips
-WHERE trip_month = '202602'
+WHERE trip_month = '202407'
 ORDER BY started_at DESC
 LIMIT 200;
 

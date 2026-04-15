@@ -129,18 +129,20 @@ def _resolve_target_months(target_month: str | None, target_range: str | None) -
 	logger.debug("Using default previous month: %s", default_month)
 	return [default_month]
 
+
+def _month_exists_in_db(session: Session, month_value: str) -> bool:
+	"""Return True when at least one row exists for the month in citibike_trips."""
+	query = "SELECT 1 FROM citibike_trips WHERE trip_month = %s LIMIT 1"
+	result = session.connection().exec_driver_sql(query, (month_value,))
+	return result.scalar() is not None
+
 def _months_missing_in_db(session: Session, target_months: List[str]) -> List[str]:
 	"""Check which target months are not yet loaded in the database."""
 	missing: List[str] = []
 	
 	for month_value in target_months:
-		# Query database for this month
-		query = "SELECT 1 FROM citibike_trips WHERE trip_month = %s LIMIT 1"
-		result = session.connection().exec_driver_sql(query, (month_value,))
-		row_exists = result.scalar()
-		
 		# If month not found, add to missing list
-		if row_exists is None:
+		if not _month_exists_in_db(session, month_value):
 			logger.debug("Month %s not found in database", month_value)
 			missing.append(month_value)
 		else:
@@ -174,6 +176,22 @@ def _month_from_file_name(path: Path) -> str:
         raise ValueError(f"Unexpected parquet file name: {path.name}")
     month = stem.replace("data", "", 1)
     return _validate_month(month)
+
+
+def _resolve_month_files_for_targets(data_dir: Path, target_months: List[str]) -> tuple[List[Path], List[str]]:
+	"""Return (existing_files, missing_months) for the provided target months, preserving order."""
+	files: List[Path] = []
+	missing: List[str] = []
+
+	for month_value in target_months:
+		validated = _validate_month(month_value)
+		target_path = data_dir / f"data{validated}.parquet"
+		if target_path.exists():
+			files.append(target_path)
+		else:
+			missing.append(validated)
+
+	return files, missing
 
 
 def _find_month_files(data_dir: Path, target_month: str | None, target_range: str | None) -> List[Path]:
@@ -401,29 +419,32 @@ def run_seed(
 		
 		logger.info("Months to seed: %s", months_to_seed)
 
-		# Convert month list to selection parameters
-		effective_month, effective_range = _months_to_selection(months_to_seed)
+		# Resolve local month files and only ingest the specific missing months.
+		month_files, missing_local_months = _resolve_month_files_for_targets(resolved_data_dir, months_to_seed)
 
-		# Find parquet files matching the selection
-		month_files: List[Path] = []
-		try:
-			month_files = _find_month_files(resolved_data_dir, effective_month, effective_range)
-		except FileNotFoundError as e:
+		if missing_local_months:
 			if not ingest_if_missing:
-				raise
-			logger.info("Parquet files missing, will run ingest: %s", e)
+				raise FileNotFoundError(
+					f"Month parquet files not found for: {', '.join(missing_local_months)}"
+				)
 
-		# If no files found locally and ingest is enabled, fetch them
-		if (not month_files) and ingest_if_missing:
-			logger.info("No parquet files found. Running ingest to fetch data.")
-			ingest_main(
-				output_dir=str(resolved_data_dir),
-				month=effective_month,
-				month_range=effective_range,
+			logger.info(
+				"Missing %d month parquet files locally; ingesting only missing months: %s",
+				len(missing_local_months),
+				missing_local_months,
 			)
-			month_files = _find_month_files(resolved_data_dir, effective_month, effective_range)
+			for missing_month in missing_local_months:
+				ingest_main(
+					output_dir=str(resolved_data_dir),
+					month=missing_month,
+				)
 
-		# Verify we found files to seed
+			month_files, missing_after_ingest = _resolve_month_files_for_targets(resolved_data_dir, months_to_seed)
+			if missing_after_ingest:
+				raise FileNotFoundError(
+					f"Month parquet files not found after ingest for: {', '.join(missing_after_ingest)}"
+				)
+
 		if not month_files:
 			raise FileNotFoundError(
 				f"No parquet files found in {resolved_data_dir}. Expected files like dataYYYYMM.parquet"
@@ -434,6 +455,16 @@ def run_seed(
 		total_inserted = 0
 		try:
 			for month_file in month_files:
+				trip_month = _month_from_file_name(month_file)
+				if _month_exists_in_db(session, trip_month):
+					logger.info(
+						"Skipping %s because trip_month=%s is already present in DB",
+						month_file.name,
+						trip_month,
+					)
+					_remove_parquet_file(month_file)
+					continue
+
 				rows, inserted = seed_month_file(session, month_file)
 				total_rows += rows
 				total_inserted += inserted

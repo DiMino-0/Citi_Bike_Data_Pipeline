@@ -1,6 +1,7 @@
 # Created by https://www.toptal.com/developers/gitignore/api/windows,visualstudiocode,venv,dotenv,python
 # Edit at https://www.toptal.com/developers/gitignore?templates=windows,visualstudiocode,venv,dotenv,python
-
+#local data
+/server/scratch/data
 ### dotenv ###
 .env
 

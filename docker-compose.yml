@@ -3,17 +3,24 @@ services:
   db:
     image: postgres:15-alpine
     container_name: postgres_db
-    env_file:
-      - ./server/.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-citibike}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citibike}
       POSTGRES_DB: ${POSTGRES_DB:-citibike}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-citibike} -d ${POSTGRES_DB:-citibike}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       # This persists database data on your local machine
       - postgres_data:/var/lib/postgresql/data
       # This runs our initialization script on the first startup
-      - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql
+      - ./server/database/Citi Bike Database.session.sql:/docker-entrypoint-initdb.d/db_setup.sql:ro
     networks:
       - app-network
 
@@ -24,12 +31,21 @@ services:
     env_file:
       - ./server/.env
     environment:
+      # Uses the local Postgres container by default; set DB_URL from an env-file or shell to use the remote database.
+      DB_URL: ${DB_URL:-postgresql+asyncpg://citibike:citibike@db:5432/citibike}
       SEED_DATA_DIR: ${SEED_DATA_DIR:-/app/scratch/data}
+      ENABLE_STARTUP_SEED: ${ENABLE_STARTUP_SEED:-true}
+      STARTUP_SEED_RANGE: ${STARTUP_SEED_RANGE:-2013..202602}
+      STARTUP_SEED_INGEST_IF_MISSING: ${STARTUP_SEED_INGEST_IF_MISSING:-true}
     volumes:
-      - C:/Users/josep/Documents/ca-certificate.crt:/etc/ssl/certs/ca-certificate.crt:ro
+      - type: bind
+        source: ${SSL_CA_HOST_PATH:-C:/Users/josep/Documents/ca-certificate.crt}
+        target: /etc/ssl/certs/ca-certificate.crt
+        read_only: true
       - ./server/scratch/data:/app/scratch/data
-    # depends_on:
-    #   - db
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - app-network
 
