@@ -25,6 +25,10 @@ def _read_bool_env(DB_ECHO: str, default: bool = False) -> bool:
     return val.lower() in ("1", "true", "yes", "on")
 
 
+# Suppress SQLAlchemy INFO-level SQL logging unless explicitly enabled
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+
 def _read_int_env(name: str, default: int, minimum: int | None = None) -> int:
     """Return integer environment variable with fallback and optional lower bound."""
     raw = os.getenv(name)

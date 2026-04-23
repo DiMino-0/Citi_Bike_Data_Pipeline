@@ -102,9 +102,40 @@ def _parse_range_bound(value: str) -> tuple[date, date]:
 	raise ValueError(f"Invalid month bound '{value}'. Expected YYYY or YYYYMM format.")
 
 
-def _name_matches_month(name: str, year_month: str) -> bool:
-	"""Return True when a filename contains the requested YYYYMM token."""
-	return year_month in name
+def _month_zip_basename(year_month: str) -> str:
+	"""Return expected monthly zip base name for a given YYYYMM."""
+	return f"{year_month}-citibike-tripdata.zip"
+
+
+def _month_csv_prefix(year_month: str) -> str:
+	"""Return expected CSV prefix inside monthly archive for a given YYYYMM."""
+	return f"{year_month}-citibike-tripdata"
+
+
+def _is_target_month_zip(path_name: str, year_month: str) -> bool:
+	"""Match monthly zip in yearly archive by exact basename.
+
+	Yearly archives use a folder like YYYY-citibike-tripdata/ with nested
+	monthly zips named YYYYMM-citibike-tripdata.zip.
+	"""
+	base_name = os.path.basename(path_name)
+	return base_name == _month_zip_basename(year_month)
+
+
+def _is_target_month_csv(path_name: str, year_month: str) -> bool:
+	"""Match CSV chunk files for a month inside a monthly archive.
+
+	Monthly archives contain one or more CSV parts such as:
+	YYYYMM-citibike-tripdata.csv
+	YYYYMM-citibike-tripdata_1.csv
+	YYYYMM-citibike-tripdata_2.csv
+	"""
+	base_name = os.path.basename(path_name)
+	lower_name = base_name.lower()
+	prefix = _month_csv_prefix(year_month).lower()
+	if not lower_name.endswith(".csv"):
+		return False
+	return lower_name.startswith(prefix)
 
 
 def _read_month_parts_from_zip(
@@ -119,9 +150,23 @@ def _read_month_parts_from_zip(
 		logger.error("No CSV file found in archive: %s", source_label)
 		return
 
-	selected_files = [name for name in csv_files if _name_matches_month(name, year_month)]
+	selected_files = [name for name in csv_files if _is_target_month_csv(name, year_month)]
 	if not selected_files:
+		logger.warning(
+			"No CSV files matched month pattern %s in %s; falling back to all %d CSV files",
+			year_month,
+			source_label,
+			len(csv_files),
+		)
 		selected_files = list(csv_files)
+
+	selected_files.sort()
+	logger.info(
+		"Reading %d CSV part(s) for %s from %s",
+		len(selected_files),
+		year_month,
+		source_label,
+	)
 
 	for csv_name in selected_files:
 		_read_csv_file(zf, csv_name, source_label, month_parts)
@@ -145,10 +190,12 @@ def _read_month_parts_from_year_archive(year_month: str, month_parts: list[pd.Da
 				_read_month_parts_from_zip(yearly_zip, year_url, year_month, month_parts)
 				return bool(month_parts)
 
-			selected_nested = [name for name in nested_zip_files if _name_matches_month(name, year_month)]
+			selected_nested = [name for name in nested_zip_files if _is_target_month_zip(name, year_month)]
 			if not selected_nested:
 				logger.debug("No nested month zip matched %s in yearly archive %s", year_month, year_url)
 				return False
+
+			selected_nested.sort()
 
 			for nested_name in selected_nested:
 				nested_label = f"{year_url}!{nested_name}"
@@ -310,7 +357,7 @@ def _read_csv_file(zf: zipfile.ZipFile, csv_name: str, url: str, month_parts: li
 	with zf.open(csv_name) as csv_file:
 		try:
 			df = pd.read_csv(
-				TextIOWrapper(csv_file, encoding='utf-8', errors='strict'),
+				TextIOWrapper(csv_file, encoding='utf-8', errors='replace'),
 				dtype={'end_station_id': 'str'},
 				low_memory=False,
 			)

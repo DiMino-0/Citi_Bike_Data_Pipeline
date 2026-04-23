@@ -249,6 +249,56 @@ function App() {
         <p>Minimal dashboard backed by FastAPI analytics endpoints.</p>
       </header>
 
+      <section className="panel" aria-label="computed elements">
+        <h2>Computed Elements</h2>
+        <ul className="notes-list">
+          <li>
+            Ride duration: calculated as the difference between{" "}
+            <code>ended_at</code> and <code>started_at</code>.
+          </li>
+          <li>
+            Optimal route + duration: computed from start/end longitude and
+            latitude, with routing logic offloaded to the OSRM API.
+          </li>
+          <li>
+            Station usage: total trip count by station name and station ID,
+            including arrivals and departures tracked per station.
+          </li>
+          <li>
+            Actual vs optimal trip duration: compares rider behavior against
+            estimated optimal duration to evaluate whether members keep bikes
+            longer than casual riders and whether electric or classic bikes are
+            favored for longer rides.
+          </li>
+        </ul>
+      </section>
+
+      <section className="panel" aria-label="visualizations made">
+        <h2>Visualizations Made</h2>
+        <ul className="notes-list">
+          <li>
+            Histograms: number of station uses by bike type (classic/electric)
+            and rider type (member/casual).
+          </li>
+          <li>
+            Scatter plot: trip duration vs time of day, highlighting dense usage
+            windows for member/casual riders.
+          </li>
+          <li>
+            Scatter plot: start longitude vs start latitude, showing
+            density/spread of trip origins colored by rider type and bike type.
+          </li>
+          <li>
+            Scatter plot: start station vs end station (with ID jitter),
+            visualizing station-to-station flow.
+          </li>
+          <li>
+            Scatter plot: start lng/lat vs end lng/lat, showing approximate
+            rider trip distances.
+          </li>
+        </ul>
+      </section>
+
       {error ? <p className="status-error">{error}</p> : null}
       {loading ? <p className="status-loading">Loading data...</p> : null}
 

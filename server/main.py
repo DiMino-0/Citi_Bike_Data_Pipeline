@@ -57,12 +57,14 @@ async def _run_startup_seed_once() -> None:
     month = os.getenv("STARTUP_SEED_MONTH") or None
     month_range = os.getenv("STARTUP_SEED_RANGE") or None
     ingest_if_missing = _env_bool("STARTUP_SEED_INGEST_IF_MISSING", True)
+    backfill_missing_rows = _env_bool("STARTUP_SEED_BACKFILL_MISSING_ROWS", False)
 
     logger.info(
-        "Running startup seed: month=%s range=%s ingest_if_missing=%s data_dir=%s",
+        "Running startup seed: month=%s range=%s ingest_if_missing=%s backfill_missing_rows=%s data_dir=%s",
         month,
         month_range,
         ingest_if_missing,
+        backfill_missing_rows,
         data_dir,
     )
 
@@ -74,6 +76,7 @@ async def _run_startup_seed_once() -> None:
             month=month,
             month_range=month_range,
             ingest_if_missing=ingest_if_missing,
+            backfill_missing_rows=backfill_missing_rows,
         )
         logger.info(
             "Startup seed finished. Files=%d Rows processed=%d Rows inserted=%d",
@@ -95,17 +98,19 @@ async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
     schedule_minute = 0
     months = 1
     ingest_if_missing = True
+    backfill_missing_rows = _env_bool("DAILY_SEED_BACKFILL_MISSING_ROWS", False)
     default_data_dir = Path(__file__).resolve().parent / "scratch" / "data"
     data_dir = os.getenv("SEED_DATA_DIR", str(default_data_dir))
-    timezone = ZoneInfo("UTC")
+    timezone = ZoneInfo("America/New_York")
 
     logger.info(
-        "Daily seed schedule enabled: hour=%d minute=%d tz=%s months=%d ingest_if_missing=%s data_dir=%s",
+        "Daily seed schedule enabled: hour=%d minute=%d tz=%s months=%d ingest_if_missing=%s backfill_missing_rows=%s data_dir=%s",
         schedule_hour,
         schedule_minute,
         timezone.key,
         months,
         ingest_if_missing,
+        backfill_missing_rows,
         data_dir,
     )
 
@@ -130,6 +135,7 @@ async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
                         db_url,
                         data_dir,
                         ingest_if_missing=ingest_if_missing,
+                        backfill_missing_rows=backfill_missing_rows,
                     )
                     logger.info(
                         "Daily seed finished. Files=%d Rows processed=%d Rows inserted=%d",

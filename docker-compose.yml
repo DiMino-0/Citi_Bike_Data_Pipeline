@@ -1,6 +1,7 @@
 services:
   # The PostgreSQL Database Service
   db:
+    profiles: ["local-db"]
     image: postgres:15-alpine
     container_name: postgres_db
     environment:
@@ -31,21 +32,21 @@ services:
     env_file:
       - ./server/.env
     environment:
-      # Uses the local Postgres container by default; set DB_URL from an env-file or shell to use the remote database.
-      DB_URL: ${DB_URL:-postgresql+asyncpg://citibike:citibike@db:5432/citibike}
+      # DB_URL comes from ./server/.env (remote DB in your current setup).
       SEED_DATA_DIR: ${SEED_DATA_DIR:-/app/scratch/data}
       ENABLE_STARTUP_SEED: ${ENABLE_STARTUP_SEED:-true}
-      STARTUP_SEED_RANGE: ${STARTUP_SEED_RANGE:-2013..202602}
+      STARTUP_SEED_RANGE: ${STARTUP_SEED_RANGE:-2013..202511}
+      # STARTUP_SEED_MONTH: ${STARTUP_SEED_MONTH:-202511}
       STARTUP_SEED_INGEST_IF_MISSING: ${STARTUP_SEED_INGEST_IF_MISSING:-true}
+      STARTUP_SEED_BACKFILL_MISSING_ROWS: ${STARTUP_SEED_BACKFILL_MISSING_ROWS:-false}
+      DAILY_SEED_BACKFILL_MISSING_ROWS: ${DAILY_SEED_BACKFILL_MISSING_ROWS:-false}
     volumes:
       - type: bind
         source: ${SSL_CA_HOST_PATH:-C:/Users/josep/Documents/ca-certificate.crt}
         target: /etc/ssl/certs/ca-certificate.crt
         read_only: true
+      # Persist fetched parquet files in the repository scratch/data directory.
       - ./server/scratch/data:/app/scratch/data
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - app-network
 
@@ -71,3 +72,5 @@ networks:
 volumes:
   postgres_data:
     driver: local
+
+# docker compose --profile local-db up --build -d

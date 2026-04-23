@@ -1,7 +1,15 @@
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlmodel import Field, SQLModel
+
+
+NEW_YORK_TZ = ZoneInfo("America/New_York")
+
+
+def _new_york_now_naive() -> datetime:
+    return datetime.now(NEW_YORK_TZ).replace(tzinfo=None)
 
 
 class CitiBikeTrip(SQLModel, table=True):
@@ -22,4 +30,4 @@ class CitiBikeTrip(SQLModel, table=True):
     end_lng: Optional[float] = None
     member_casual: str = Field(index=True)
     trip_month: str = Field(index=True, max_length=6)
-    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    created_at: datetime = Field(default_factory=_new_york_now_naive, nullable=False)
