@@ -2,6 +2,7 @@ version: "3.8"
 services:
   backend:
     image: fastapi_backend:latest
+    restart: unless-stopped
     # Read secrets from runtime environment (injected by CI / orchestrator)
     environment:
       DB_URL: ${DB_URL}

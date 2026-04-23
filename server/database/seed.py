@@ -55,10 +55,13 @@ def _copy_insert_sql() -> str:
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    root_logger = logging.getLogger()
+    # Only configure if no handlers are already attached
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        )
 
 
 def _sync_db_url(db_url: str) -> str:
@@ -357,7 +360,7 @@ def _insert_batch(session: Session, prepared: pd.DataFrame) -> int:
 		raise
 
 
-def seed_month_file(session: Session, parquet_file: Path, batch_size: int = 500_000) -> Tuple[int, int]:
+def seed_month_file(session: Session, parquet_file: Path, batch_size: int = 100_000) -> Tuple[int, int]:
 	"""Load data from a parquet file into the database, returning (total_rows, rows_inserted)."""
 	trip_month = _month_from_file_name(parquet_file)
 	logger.info("Seeding %s", parquet_file.name)
@@ -486,9 +489,19 @@ def run_seed(
     month_range: str | None = None,
     ingest_if_missing: bool = False,
 	backfill_missing_rows: bool = False,
+	force_clear_lock: bool = False,
 ) -> Tuple[int, int, int]:
 	"""
 	Seed the database with Citi Bike trip data.
+	
+	Args:
+		db_url: Database connection URL
+		data_dir: Directory containing parquet files
+		month: Specific month to seed (YYYYMM format)
+		month_range: Range of months to seed (YYYYMM..YYYYMM format)
+		ingest_if_missing: Fetch missing month files via ingest if not found locally
+		backfill_missing_rows: Re-seed target months to attempt filling missing rows
+		force_clear_lock: Force-clear any lingering advisory locks (for startup recovery)
 	
 	Returns: (files_processed, total_rows, rows_inserted)
 	"""
@@ -514,6 +527,16 @@ def run_seed(
 	engine = create_engine(sync_url)
 
 	with Session(engine) as session:
+		# Force-clear any lingering advisory locks if requested (handles crashed seed operations)
+		if force_clear_lock:
+			try:
+				session.connection().exec_driver_sql(
+					"SELECT pg_advisory_unlock_all()"
+				)
+				logger.debug("Cleared any lingering advisory locks from previous operations")
+			except Exception as e:
+				logger.warning("Failed to clear lingering advisory locks: %s", e)
+
 		# Attempt to acquire advisory lock for this seeding operation
 		lock_result = session.connection().exec_driver_sql(
 			"SELECT pg_try_advisory_lock(%s)",
@@ -650,6 +673,7 @@ def main() -> None:
         month_range=args.month_range,
         ingest_if_missing=args.ingest_if_missing,
 		backfill_missing_rows=args.backfill_missing_rows,
+		force_clear_lock=True,  # CLI invocation should clear lingering locks
     )
 
 

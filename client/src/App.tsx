@@ -21,6 +21,66 @@ type BucketSummary = {
   lostBikeFeeFlag: boolean;
 };
 
+type StationUsage = {
+  stationName: string;
+  stationId: string;
+  arrivals: number;
+  departures: number;
+  totalTrips: number;
+};
+
+type HistogramBucket = {
+  rideableType?: string;
+  memberCasual?: "member" | "casual";
+  tripCount: number;
+};
+
+type DurationByHour = {
+  hour: number;
+  memberCasual: "member" | "casual";
+  tripCount: number;
+  averageDurationMinutes: number;
+};
+
+type FlowPoint = {
+  startStationName?: string;
+  startStationId?: string;
+  endStationName?: string;
+  endStationId?: string;
+  startLat?: number | null;
+  startLng?: number | null;
+  endLat?: number | null;
+  endLng?: number | null;
+  rideableType?: string;
+  memberCasual?: "member" | "casual";
+  tripCount: number;
+};
+
+type DashboardSummary = {
+  summary: {
+    tripCount: number;
+    averageActualMinutes: number;
+    averageEstimatedMinutes: number;
+    averageDeltaMinutes: number;
+  };
+  stationUsage: StationUsage[];
+  histogramByBikeType: HistogramBucket[];
+  histogramByRiderType: HistogramBucket[];
+  durationByHour: DurationByHour[];
+  originSpread: FlowPoint[];
+  stationFlow: FlowPoint[];
+  coordinatePairs: FlowPoint[];
+  actualVsEstimated: Array<{
+    memberCasual: "member" | "casual";
+    rideableType: string;
+    tripCount: number;
+    averageActualMinutes: number;
+    averageEstimatedMinutes: number;
+    deltaMinutes: number;
+  }>;
+  estimatedSpeedMph: number;
+};
+
 const API_BASE =
   typeof import.meta.env.VITE_API_BASE_URL === "string"
     ? import.meta.env.VITE_API_BASE_URL
@@ -127,10 +187,190 @@ function parseBucketSummary(value: unknown): BucketSummary[] {
     .filter((item): item is BucketSummary => item !== null);
 }
 
+function parseDashboardSummary(value: unknown): DashboardSummary | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const item = value as {
+    summary?: unknown;
+    stationUsage?: unknown;
+    histogramByBikeType?: unknown;
+    histogramByRiderType?: unknown;
+    durationByHour?: unknown;
+    originSpread?: unknown;
+    stationFlow?: unknown;
+    coordinatePairs?: unknown;
+    actualVsEstimated?: unknown;
+    estimatedSpeedMph?: unknown;
+  };
+
+  if (
+    !item.summary ||
+    !Array.isArray(item.stationUsage) ||
+    !Array.isArray(item.histogramByBikeType) ||
+    !Array.isArray(item.histogramByRiderType) ||
+    !Array.isArray(item.durationByHour) ||
+    !Array.isArray(item.originSpread) ||
+    !Array.isArray(item.stationFlow) ||
+    !Array.isArray(item.coordinatePairs) ||
+    !Array.isArray(item.actualVsEstimated) ||
+    typeof item.estimatedSpeedMph !== "number"
+  ) {
+    return null;
+  }
+
+  const summary = item.summary as {
+    tripCount?: unknown;
+    averageActualMinutes?: unknown;
+    averageEstimatedMinutes?: unknown;
+    averageDeltaMinutes?: unknown;
+  };
+
+  if (
+    typeof summary.tripCount !== "number" ||
+    typeof summary.averageActualMinutes !== "number" ||
+    typeof summary.averageEstimatedMinutes !== "number" ||
+    typeof summary.averageDeltaMinutes !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    summary: {
+      tripCount: summary.tripCount,
+      averageActualMinutes: summary.averageActualMinutes,
+      averageEstimatedMinutes: summary.averageEstimatedMinutes,
+      averageDeltaMinutes: summary.averageDeltaMinutes,
+    },
+    stationUsage: item.stationUsage
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const station = row as StationUsage;
+        if (
+          typeof station.stationName !== "string" ||
+          typeof station.stationId !== "string" ||
+          typeof station.arrivals !== "number" ||
+          typeof station.departures !== "number" ||
+          typeof station.totalTrips !== "number"
+        ) {
+          return null;
+        }
+
+        return station;
+      })
+      .filter((row): row is StationUsage => row !== null),
+    histogramByBikeType: item.histogramByBikeType
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const bucket = row as HistogramBucket;
+        if (
+          typeof bucket.rideableType !== "string" ||
+          typeof bucket.tripCount !== "number"
+        ) {
+          return null;
+        }
+
+        return bucket;
+      })
+      .filter((row): row is HistogramBucket => row !== null),
+    histogramByRiderType: item.histogramByRiderType
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const bucket = row as HistogramBucket;
+        if (
+          bucket.memberCasual !== "member" &&
+          bucket.memberCasual !== "casual"
+        ) {
+          return null;
+        }
+
+        if (typeof bucket.tripCount !== "number") {
+          return null;
+        }
+
+        return bucket;
+      })
+      .filter((row): row is HistogramBucket => row !== null),
+    durationByHour: item.durationByHour
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const bucket = row as DurationByHour;
+        if (
+          typeof bucket.hour !== "number" ||
+          (bucket.memberCasual !== "member" &&
+            bucket.memberCasual !== "casual") ||
+          typeof bucket.tripCount !== "number" ||
+          typeof bucket.averageDurationMinutes !== "number"
+        ) {
+          return null;
+        }
+
+        return bucket;
+      })
+      .filter((row): row is DurationByHour => row !== null),
+    originSpread: item.originSpread
+      .map((row) =>
+        row && typeof row === "object" ? (row as FlowPoint) : null,
+      )
+      .filter((row): row is FlowPoint => row !== null),
+    stationFlow: item.stationFlow
+      .map((row) =>
+        row && typeof row === "object" ? (row as FlowPoint) : null,
+      )
+      .filter((row): row is FlowPoint => row !== null),
+    coordinatePairs: item.coordinatePairs
+      .map((row) =>
+        row && typeof row === "object" ? (row as FlowPoint) : null,
+      )
+      .filter((row): row is FlowPoint => row !== null),
+    actualVsEstimated: item.actualVsEstimated
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const bucket = row as DashboardSummary["actualVsEstimated"][number];
+        if (
+          (bucket.memberCasual !== "member" &&
+            bucket.memberCasual !== "casual") ||
+          typeof bucket.rideableType !== "string" ||
+          typeof bucket.tripCount !== "number" ||
+          typeof bucket.averageActualMinutes !== "number" ||
+          typeof bucket.averageEstimatedMinutes !== "number" ||
+          typeof bucket.deltaMinutes !== "number"
+        ) {
+          return null;
+        }
+
+        return bucket;
+      })
+      .filter(
+        (row): row is DashboardSummary["actualVsEstimated"][number] =>
+          row !== null,
+      ),
+    estimatedSpeedMph: item.estimatedSpeedMph,
+  };
+}
+
 function App() {
   const [monthlyTripCounts, setMonthlyTripCounts] = useState<MonthCount[]>([]);
   const [feeRows, setFeeRows] = useState<FeeSummary[]>([]);
   const [bucketRows, setBucketRows] = useState<BucketSummary[]>([]);
+  const [dashboardSummary, setDashboardSummary] =
+    useState<DashboardSummary | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [selectedRider, setSelectedRider] = useState<
     "all" | "member" | "casual"
@@ -192,26 +432,39 @@ function App() {
           rider: selectedRider,
         });
 
-        const [feeResponse, bucketResponse] = await Promise.all([
-          fetch(
-            `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
-          ),
-          fetch(
-            `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=5`,
-          ),
-        ]);
+        const [feeResponse, bucketResponse, dashboardResponse] =
+          await Promise.all([
+            fetch(
+              `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
+            ),
+            fetch(
+              `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=5`,
+            ),
+            fetch(
+              `${API_BASE}/api/analytics/dashboard-summary?${params.toString()}`,
+            ),
+          ]);
 
-        if (!feeResponse.ok || !bucketResponse.ok) {
+        const [feeOk, bucketOk, dashboardOk] = [
+          feeResponse.ok,
+          bucketResponse.ok,
+          dashboardResponse.ok,
+        ];
+
+        if (!feeOk || !bucketOk || !dashboardOk) {
           throw new Error("Unable to load filtered analytics data.");
         }
 
         const feePayload: unknown = await feeResponse.json();
         const bucketPayload: unknown = await bucketResponse.json();
+        const dashboardPayload: unknown = await dashboardResponse.json();
         const feeData = parseFeeSummary(feePayload);
         const bucketData = parseBucketSummary(bucketPayload);
+        const dashboardData = parseDashboardSummary(dashboardPayload);
 
         setFeeRows(feeData);
         setBucketRows(bucketData);
+        setDashboardSummary(dashboardData);
       } catch (err) {
         setError(
           err instanceof Error
@@ -220,6 +473,7 @@ function App() {
         );
         setFeeRows([]);
         setBucketRows([]);
+        setDashboardSummary(null);
       } finally {
         setLoading(false);
       }
@@ -242,6 +496,8 @@ function App() {
     };
   }, [feeRows]);
 
+  const formatMinutes = (value: number) => `${value.toFixed(1)} min`;
+
   return (
     <main className="dashboard">
       <header className="dashboard-header">
@@ -251,52 +507,215 @@ function App() {
 
       <section className="panel" aria-label="computed elements">
         <h2>Computed Elements</h2>
-        <ul className="notes-list">
-          <li>
-            Ride duration: calculated as the difference between{" "}
-            <code>ended_at</code> and <code>started_at</code>.
-          </li>
-          <li>
-            Optimal route + duration: computed from start/end longitude and
-            latitude, with routing logic offloaded to the OSRM API.
-          </li>
-          <li>
-            Station usage: total trip count by station name and station ID,
-            including arrivals and departures tracked per station.
-          </li>
-          <li>
-            Actual vs optimal trip duration: compares rider behavior against
-            estimated optimal duration to evaluate whether members keep bikes
-            longer than casual riders and whether electric or classic bikes are
-            favored for longer rides.
-          </li>
-        </ul>
+        {dashboardSummary ? (
+          <>
+            <ul className="notes-list">
+              <li>
+                Ride duration:{" "}
+                {formatMinutes(dashboardSummary.summary.averageActualMinutes)}{" "}
+                average across{" "}
+                {dashboardSummary.summary.tripCount.toLocaleString()} trips.
+              </li>
+              <li>
+                Estimated trip duration:{" "}
+                {formatMinutes(
+                  dashboardSummary.summary.averageEstimatedMinutes,
+                )}{" "}
+                using a local straight-line estimate at{" "}
+                {dashboardSummary.estimatedSpeedMph.toFixed(1)} mph.
+              </li>
+              <li>
+                Actual vs estimated delta:{" "}
+                {formatMinutes(dashboardSummary.summary.averageDeltaMinutes)} on
+                average.
+              </li>
+            </ul>
+
+            <h3>Actual vs Estimated by Rider and Bike Type</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Rider</th>
+                  <th>Bike</th>
+                  <th>Trips</th>
+                  <th>Actual Avg</th>
+                  <th>Estimated Avg</th>
+                  <th>Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.actualVsEstimated.map((row) => (
+                  <tr key={`${row.memberCasual}-${row.rideableType}`}>
+                    <td>{row.memberCasual}</td>
+                    <td>{row.rideableType}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                    <td>{formatMinutes(row.averageActualMinutes)}</td>
+                    <td>{formatMinutes(row.averageEstimatedMinutes)}</td>
+                    <td>{formatMinutes(row.deltaMinutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <h3>Station Usage</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th>ID</th>
+                  <th>Arrivals</th>
+                  <th>Departures</th>
+                  <th>Total Trips</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.stationUsage.map((row) => (
+                  <tr key={`${row.stationName}-${row.stationId}`}>
+                    <td>{row.stationName}</td>
+                    <td>{row.stationId}</td>
+                    <td>{row.arrivals.toLocaleString()}</td>
+                    <td>{row.departures.toLocaleString()}</td>
+                    <td>{row.totalTrips.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <p className="status-loading">Computed summary loading...</p>
+        )}
       </section>
 
       <section className="panel" aria-label="visualizations made">
         <h2>Visualizations Made</h2>
-        <ul className="notes-list">
-          <li>
-            Histograms: number of station uses by bike type (classic/electric)
-            and rider type (member/casual).
-          </li>
-          <li>
-            Scatter plot: trip duration vs time of day, highlighting dense usage
-            windows for member/casual riders.
-          </li>
-          <li>
-            Scatter plot: start longitude vs start latitude, showing
-            density/spread of trip origins colored by rider type and bike type.
-          </li>
-          <li>
-            Scatter plot: start station vs end station (with ID jitter),
-            visualizing station-to-station flow.
-          </li>
-          <li>
-            Scatter plot: start lng/lat vs end lng/lat, showing approximate
-            rider trip distances.
-          </li>
-        </ul>
+        {dashboardSummary ? (
+          <>
+            <h3>Histograms</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Category</th>
+                  <th>Trips</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.histogramByBikeType.map((row) => (
+                  <tr key={`bike-${row.rideableType}`}>
+                    <td>bike</td>
+                    <td>{row.rideableType}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                  </tr>
+                ))}
+                {dashboardSummary.histogramByRiderType.map((row) => (
+                  <tr key={`rider-${row.memberCasual}`}>
+                    <td>rider</td>
+                    <td>{row.memberCasual}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <h3>Scatter: Trip Duration vs Time of Day</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Hour</th>
+                  <th>Rider</th>
+                  <th>Trips</th>
+                  <th>Avg Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.durationByHour.map((row) => (
+                  <tr key={`${row.hour}-${row.memberCasual}`}>
+                    <td>{row.hour.toString().padStart(2, "0")} : 00</td>
+                    <td>{row.memberCasual}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                    <td>{formatMinutes(row.averageDurationMinutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <h3>Scatter: Start Longitude vs Start Latitude</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Start Lat</th>
+                  <th>Start Lng</th>
+                  <th>Rider</th>
+                  <th>Bike</th>
+                  <th>Trips</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.originSpread.map((row) => (
+                  <tr
+                    key={`${row.startLat}-${row.startLng}-${row.memberCasual}-${row.rideableType}`}
+                  >
+                    <td>{row.startLat ?? "n/a"}</td>
+                    <td>{row.startLng ?? "n/a"}</td>
+                    <td>{row.memberCasual}</td>
+                    <td>{row.rideableType}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <h3>Scatter: Start Station vs End Station</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Start Station</th>
+                  <th>End Station</th>
+                  <th>Trips</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.stationFlow.map((row) => (
+                  <tr
+                    key={`${row.startStationId}-${row.endStationId}-${row.startStationName}-${row.endStationName}`}
+                  >
+                    <td>{row.startStationName ?? "n/a"}</td>
+                    <td>{row.endStationName ?? "n/a"}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <h3>Scatter: Start Lng/Lat vs End Lng/Lat</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Start Lat</th>
+                  <th>Start Lng</th>
+                  <th>End Lat</th>
+                  <th>End Lng</th>
+                  <th>Trips</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardSummary.coordinatePairs.map((row) => (
+                  <tr
+                    key={`${row.startLat}-${row.startLng}-${row.endLat}-${row.endLng}`}
+                  >
+                    <td>{row.startLat ?? "n/a"}</td>
+                    <td>{row.startLng ?? "n/a"}</td>
+                    <td>{row.endLat ?? "n/a"}</td>
+                    <td>{row.endLng ?? "n/a"}</td>
+                    <td>{row.tripCount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <p className="status-loading">Visualization data loading...</p>
+        )}
       </section>
 
       {error ? <p className="status-error">{error}</p> : null}

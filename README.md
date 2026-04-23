@@ -6,9 +6,9 @@
 
 **Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel) → PostgreSQL database → React frontend (Vite + Node.js) (ascii visualization at bottom)
 
-**Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
+**Automation**: GitHub Actions deploys Docker Compose services to the DigitalOcean server; monthly data seeding runs from the backend app scheduler.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). App service scheduled and running on backing server.
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). Production runtime is managed by Docker Compose invocations from CI/CD.
 
 ## **Data Pipeline**
 

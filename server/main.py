@@ -1,17 +1,32 @@
 import os
 import logging
 import asyncio
+import fcntl
 from contextlib import asynccontextmanager
 from datetime import datetime
+from collections import defaultdict
+from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
+from typing import SupportsInt, cast
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from database.db import check_db_connection, get_engine, get_session
 from database.seed import run_seed
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 import uvicorn
+
+
+_LOCK_EX = getattr(fcntl, "LOCK_EX", 2)
+_LOCK_NB = getattr(fcntl, "LOCK_NB", 4)
+_LOCK_UN = getattr(fcntl, "LOCK_UN", 8)
+
+
+def _flock(fd: int, operation: int) -> None:
+    flock_fn = getattr(fcntl, "flock", None)
+    if flock_fn is None:
+        raise OSError("fcntl.flock is unavailable on this platform")
+    flock_fn(fd, operation)
 
 
 if not logging.getLogger().handlers:
@@ -21,6 +36,83 @@ if not logging.getLogger().handlers:
     )
 
 logger = logging.getLogger(__name__)
+
+EARTH_RADIUS_MILES = 3958.7613
+ESTIMATED_SPEED_MPH = 10.0
+
+
+def _query_source() -> str:
+    source = os.getenv("DEMO_SOURCE", os.getenv("DEMO_QUERY_SOURCE", "db")).strip().lower()
+    if source not in {"db", "parquet"}:
+        logger.warning("Invalid DEMO_SOURCE=%r. Falling back to 'db'.", source)
+        return "db"
+    return source
+
+
+def _parquet_glob() -> str:
+    default_glob = str(Path(__file__).resolve().parent / "scratch" / "data" / "data*.parquet")
+    return os.getenv("DEMO_PARQUET_GLOB", default_glob)
+
+
+def _is_parquet_source() -> bool:
+    return _query_source() == "parquet"
+
+
+def _coerce_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    raise ValueError(f"Unsupported datetime value: {value!r}")
+
+
+def _coerce_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str, bytes, bytearray)):
+        return int(value)
+    return int(cast(SupportsInt, value))
+
+
+def _duckdb_rows(query: str, params: list[object] | None = None) -> list[dict[str, object]]:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Parquet demo mode requires duckdb. Install server requirements first.",
+        ) from exc
+
+    con = duckdb.connect()
+    try:
+        executed = con.execute(query, params or [])
+        columns = [column[0] for column in executed.description]
+        rows = executed.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+    finally:
+        con.close()
+
+
+async def _query_rows(
+    *,
+    db_query: str,
+    db_params: dict[str, object] | None = None,
+    parquet_query: str | None = None,
+    parquet_params: list[object] | None = None,
+) -> list[dict[str, object]]:
+    if _is_parquet_source():
+        if parquet_query is None:
+            parquet_query = db_query
+            parquet_params = []
+        return _duckdb_rows(parquet_query, parquet_params)
+
+    async for session in get_session():
+        result = await session.execute(text(db_query), db_params or {})
+        rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+    return []
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -39,6 +131,66 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logger.warning("Invalid integer for %s=%r. Using default=%d", name, raw, default)
         return default
+
+
+def _haversine_miles(
+    start_lat: float,
+    start_lng: float,
+    end_lat: float,
+    end_lng: float,
+) -> float:
+    lat1 = radians(start_lat)
+    lon1 = radians(start_lng)
+    lat2 = radians(end_lat)
+    lon2 = radians(end_lng)
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    a = sin(delta_lat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(delta_lon / 2) ** 2
+    return 2 * EARTH_RADIUS_MILES * asin(sqrt(a))
+
+
+def _rounded(value: float | None, precision: int = 3) -> float | None:
+    if value is None:
+        return None
+    return round(value, precision)
+
+
+# Global variable to hold the startup lock file object (must stay alive for lock to persist)
+_startup_lock_file = None
+
+
+def _acquire_startup_lock() -> bool:
+    """Attempt to acquire a non-blocking file lock for startup tasks. Returns True if acquired."""
+    global _startup_lock_file
+    lock_path = Path("/tmp/citibike_startup.lock")
+    try:
+        # Open the lock file, creating it if it doesn't exist
+        _startup_lock_file = open(lock_path, "w")
+        # Try to acquire a non-blocking exclusive lock
+        _flock(_startup_lock_file.fileno(), _LOCK_EX | _LOCK_NB)
+        logger.debug("Successfully acquired startup lock at %s", lock_path)
+        return True
+    except (IOError, OSError) as e:
+        # Lock is held by another process
+        if _startup_lock_file:
+            _startup_lock_file.close()
+            _startup_lock_file = None
+        logger.debug("Could not acquire startup lock: %s", e)
+        return False
+
+
+def _release_startup_lock() -> None:
+    """Release the startup lock."""
+    global _startup_lock_file
+    if _startup_lock_file is not None:
+        try:
+            _flock(_startup_lock_file.fileno(), _LOCK_UN)
+            _startup_lock_file.close()
+            logger.debug("Released startup lock")
+        except OSError as e:
+            logger.debug("Error releasing startup lock: %s", e)
+        finally:
+            _startup_lock_file = None
 
 
 async def _run_startup_seed_once() -> None:
@@ -77,6 +229,7 @@ async def _run_startup_seed_once() -> None:
             month_range=month_range,
             ingest_if_missing=ingest_if_missing,
             backfill_missing_rows=backfill_missing_rows,
+            force_clear_lock=True,  # Clear any lingering locks from previous crashed seed operations
         )
         logger.info(
             "Startup seed finished. Files=%d Rows processed=%d Rows inserted=%d",
@@ -136,6 +289,7 @@ async def _daily_seed_loop(stop_event: asyncio.Event) -> None:
                         data_dir,
                         ingest_if_missing=ingest_if_missing,
                         backfill_missing_rows=backfill_missing_rows,
+                        force_clear_lock=False,  # Respect advisory lock in regular operation
                     )
                     logger.info(
                         "Daily seed finished. Files=%d Rows processed=%d Rows inserted=%d",
@@ -165,16 +319,47 @@ async def lifespan(_: FastAPI):
         logger.info("Database connection check at startup: ok")
     else:
         logger.warning("Database connection check at startup: unavailable")
-    await _run_startup_seed_once()
-    stop_event = asyncio.Event()
-    seed_task = asyncio.create_task(_daily_seed_loop(stop_event))
+
+    # Attempt to acquire lock for startup tasks (only one worker should run these)
+    owns_startup_lock = _acquire_startup_lock()
+    startup_seed_task = None
+    seed_task = None
+    stop_event = None
+
+    if owns_startup_lock:
+        logger.info("This worker acquired the startup lock and will run startup tasks")
+        # Schedule startup seed in background so API readiness is not blocked by long seed runs.
+        startup_seed_task = asyncio.create_task(_run_startup_seed_once())
+        stop_event = asyncio.Event()
+        seed_task = asyncio.create_task(_daily_seed_loop(stop_event))
+    else:
+        logger.info("Another worker holds the startup lock - skipping startup tasks for this worker")
+
     yield
-    stop_event.set()
-    seed_task.cancel()
+
+    # Clean up tasks only if this worker owns them
+    if stop_event is not None:
+        stop_event.set()
+    if startup_seed_task is not None:
+        startup_seed_task.cancel()
+    if seed_task is not None:
+        seed_task.cancel()
+
     try:
-        await seed_task
+        if startup_seed_task is not None:
+            await startup_seed_task
     except asyncio.CancelledError:
         pass
+
+    try:
+        if seed_task is not None:
+            await seed_task
+    except asyncio.CancelledError:
+        pass
+
+    if owns_startup_lock:
+        _release_startup_lock()
+
     logger.info("Server shutdown initiated")
 
 
@@ -210,21 +395,28 @@ async def session_info():
 
 
 @app.get("/api/analytics/monthly-trip-counts")
-async def analytics_monthly_trip_counts(session: AsyncSession = Depends(get_session)):
-    query = text(
-        """
+async def analytics_monthly_trip_counts():
+    db_query = """
         SELECT trip_month, COUNT(*) AS trip_count
         FROM citibike_trips
         GROUP BY trip_month
         ORDER BY trip_month
         """
+    parquet_query = """
+        SELECT trip_month, COUNT(*) AS trip_count
+        FROM read_parquet(?, union_by_name=true)
+        GROUP BY trip_month
+        ORDER BY trip_month
+        """
+    rows = await _query_rows(
+        db_query=db_query,
+        parquet_query=parquet_query,
+        parquet_params=[_parquet_glob()],
     )
-    result = await session.execute(query)
-    rows = result.mappings().all()
     return [
         {
             "tripMonth": row["trip_month"],
-            "tripCount": int(row["trip_count"]),
+            "tripCount": _coerce_int(row["trip_count"]),
         }
         for row in rows
     ]
@@ -234,10 +426,8 @@ async def analytics_monthly_trip_counts(session: AsyncSession = Depends(get_sess
 async def analytics_lost_bike_fee_summary(
     month: str = Query(..., min_length=6, max_length=6),
     rider: str = Query("all", pattern="^(all|member|casual)$"),
-    session: AsyncSession = Depends(get_session),
 ):
-    query = text(
-        """
+    db_query = """
         WITH durations AS (
             SELECT
                 trip_month,
@@ -258,15 +448,39 @@ async def analytics_lost_bike_fee_summary(
         GROUP BY trip_month, member_casual
         ORDER BY member_casual
         """
+    parquet_query = """
+        WITH durations AS (
+            SELECT
+                trip_month,
+                LOWER(member_casual) AS member_casual,
+                GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
+            FROM read_parquet(?, union_by_name=true)
+            WHERE ended_at IS NOT NULL
+              AND started_at IS NOT NULL
+              AND trip_month = ?
+              AND (? = 'all' OR LOWER(member_casual) = ?)
+        )
+        SELECT
+            trip_month,
+            member_casual,
+            SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) AS lost_bike_fee_trips,
+            COUNT(*) AS total_trips
+        FROM durations
+        GROUP BY trip_month, member_casual
+        ORDER BY member_casual
+        """
+    rows = await _query_rows(
+        db_query=db_query,
+        db_params={"month": month, "rider": rider},
+        parquet_query=parquet_query,
+        parquet_params=[_parquet_glob(), month, rider, rider],
     )
-    result = await session.execute(query, {"month": month, "rider": rider})
-    rows = result.mappings().all()
     return [
         {
             "tripMonth": row["trip_month"],
             "memberCasual": row["member_casual"],
-            "lostBikeFeeTrips": int(row["lost_bike_fee_trips"]),
-            "totalTrips": int(row["total_trips"]),
+            "lostBikeFeeTrips": _coerce_int(row["lost_bike_fee_trips"]),
+            "totalTrips": _coerce_int(row["total_trips"]),
         }
         for row in rows
     ]
@@ -277,10 +491,8 @@ async def analytics_duration_buckets(
     month: str = Query(..., min_length=6, max_length=6),
     rider: str = Query("all", pattern="^(all|member|casual)$"),
     bucket_minutes: int = Query(5, ge=1, le=60),
-    session: AsyncSession = Depends(get_session),
 ):
-    query = text(
-        """
+    db_query = """
         WITH durations AS (
             SELECT
                 trip_month,
@@ -320,22 +532,322 @@ async def analytics_duration_buckets(
             CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
             duration_bucket
         """
+    parquet_query = """
+        WITH durations AS (
+            SELECT
+                trip_month,
+                LOWER(member_casual) AS member_casual,
+                GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
+            FROM read_parquet(?, union_by_name=true)
+            WHERE ended_at IS NOT NULL
+              AND started_at IS NOT NULL
+              AND trip_month = ?
+              AND (? = 'all' OR LOWER(member_casual) = ?)
+        ), bucketed AS (
+            SELECT
+                d.trip_month,
+                d.member_casual,
+                d.duration_min,
+                CASE
+                    WHEN d.duration_min > 1440 THEN 'LOST_BIKE_FEE'
+                    ELSE
+                        LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? AS INTEGER) AS VARCHAR), 4, '0')
+                        || '-'
+                        || LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? + ? - 1 AS INTEGER) AS VARCHAR), 4, '0')
+                        || ' min'
+                END AS duration_bucket
+            FROM durations d
+        )
+        SELECT
+            trip_month,
+            member_casual,
+            duration_bucket,
+            COUNT(*) AS trips,
+            (SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) > 0) AS lost_bike_fee_flag
+        FROM bucketed
+        GROUP BY trip_month, member_casual, duration_bucket
+        ORDER BY
+            member_casual,
+            CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
+            duration_bucket
+        """
+    rows = await _query_rows(
+        db_query=db_query,
+        db_params={"month": month, "rider": rider, "bucket_minutes": bucket_minutes},
+        parquet_query=parquet_query,
+        parquet_params=[
+            _parquet_glob(),
+            month,
+            rider,
+            rider,
+            bucket_minutes,
+            bucket_minutes,
+            bucket_minutes,
+            bucket_minutes,
+            bucket_minutes,
+        ],
     )
-    result = await session.execute(
-        query,
-        {"month": month, "rider": rider, "bucket_minutes": bucket_minutes},
-    )
-    rows = result.mappings().all()
     return [
         {
             "tripMonth": row["trip_month"],
             "memberCasual": row["member_casual"],
             "bucket": row["duration_bucket"],
-            "trips": int(row["trips"]),
+            "trips": _coerce_int(row["trips"]),
             "lostBikeFeeFlag": bool(row["lost_bike_fee_flag"]),
         }
         for row in rows
     ]
+
+
+@app.get("/api/analytics/dashboard-summary")
+async def analytics_dashboard_summary(
+    month: str = Query(..., min_length=6, max_length=6),
+    rider: str = Query("all", pattern="^(all|member|casual)$"),
+    top_n: int = Query(10, ge=1, le=50),
+):
+    db_query = """
+        SELECT
+            rideable_type,
+            LOWER(member_casual) AS member_casual,
+            started_at,
+            ended_at,
+            start_station_name,
+            start_station_id,
+            end_station_name,
+            end_station_id,
+            start_lat,
+            start_lng,
+            end_lat,
+            end_lng
+        FROM citibike_trips
+        WHERE trip_month = :month
+          AND started_at IS NOT NULL
+          AND ended_at IS NOT NULL
+          AND (:rider = 'all' OR LOWER(member_casual) = :rider)
+        """
+    parquet_query = """
+        SELECT
+            rideable_type,
+            LOWER(member_casual) AS member_casual,
+            started_at,
+            ended_at,
+            start_station_name,
+            start_station_id,
+            end_station_name,
+            end_station_id,
+            start_lat,
+            start_lng,
+            end_lat,
+            end_lng
+        FROM read_parquet(?, union_by_name=true)
+        WHERE trip_month = ?
+          AND started_at IS NOT NULL
+          AND ended_at IS NOT NULL
+          AND (? = 'all' OR LOWER(member_casual) = ?)
+        """
+    rows = await _query_rows(
+        db_query=db_query,
+        db_params={"month": month, "rider": rider},
+        parquet_query=parquet_query,
+        parquet_params=[_parquet_glob(), month, rider, rider],
+    )
+
+    total_trips = 0
+    actual_duration_total = 0.0
+    estimated_duration_total = 0.0
+    actual_duration_with_estimate_total = 0.0
+    estimated_trip_count = 0
+    station_usage: dict[tuple[str, str], dict[str, object]] = {}
+    station_flow: dict[tuple[str, str, str, str], int] = defaultdict(int)
+    duration_by_hour: dict[tuple[int, str], dict[str, float | int | str]] = {}
+    histogram_by_bike: dict[str, int] = defaultdict(int)
+    histogram_by_rider: dict[str, int] = defaultdict(int)
+    origin_spread: dict[tuple[float | None, float | None, str, str], int] = defaultdict(int)
+    coord_pairs: dict[tuple[float | None, float | None, float | None, float | None], int] = defaultdict(int)
+    actual_vs_estimated: dict[tuple[str, str], dict[str, float | int | str]] = {}
+
+    for row in rows:
+        total_trips += 1
+        rideable_type = str(row["rideable_type"] or "unknown")
+        member_casual = str(row["member_casual"] or "unknown")
+
+        histogram_by_bike[rideable_type] += 1
+        histogram_by_rider[member_casual] += 1
+
+        started_at = _coerce_datetime(row["started_at"])
+        ended_at = _coerce_datetime(row["ended_at"])
+        actual_minutes = max(0.0, (ended_at - started_at).total_seconds() / 60)
+        actual_duration_total += actual_minutes
+
+        hour_key = (int(started_at.hour), member_casual)
+        hour_bucket = duration_by_hour.setdefault(
+            hour_key,
+            {"hour": int(started_at.hour), "memberCasual": member_casual, "tripCount": 0, "averageDurationMinutes": 0.0},
+        )
+        hour_bucket["tripCount"] = int(hour_bucket["tripCount"]) + 1
+        hour_bucket["averageDurationMinutes"] = float(hour_bucket["averageDurationMinutes"]) + actual_minutes
+
+        start_station_name = str(row["start_station_name"] or "Unknown station")
+        start_station_id = str(row["start_station_id"] or "Unknown station")
+        end_station_name = str(row["end_station_name"] or "Unknown station")
+        end_station_id = str(row["end_station_id"] or "Unknown station")
+
+        start_key = (start_station_name, start_station_id)
+        start_station = station_usage.setdefault(
+            start_key,
+            {
+                "stationName": start_station_name,
+                "stationId": start_station_id,
+                "arrivals": 0,
+                "departures": 0,
+                "totalTrips": 0,
+            },
+        )
+        start_station["departures"] = _coerce_int(start_station["departures"]) + 1
+        start_station["totalTrips"] = _coerce_int(start_station["totalTrips"]) + 1
+
+        end_key = (end_station_name, end_station_id)
+        end_station = station_usage.setdefault(
+            end_key,
+            {
+                "stationName": end_station_name,
+                "stationId": end_station_id,
+                "arrivals": 0,
+                "departures": 0,
+                "totalTrips": 0,
+            },
+        )
+        end_station["arrivals"] = _coerce_int(end_station["arrivals"]) + 1
+        end_station["totalTrips"] = _coerce_int(end_station["totalTrips"]) + 1
+
+        station_flow[(start_station_name, start_station_id, end_station_name, end_station_id)] += 1
+
+        start_lat = cast(float | None, row["start_lat"])
+        start_lng = cast(float | None, row["start_lng"])
+        end_lat = cast(float | None, row["end_lat"])
+        end_lng = cast(float | None, row["end_lng"])
+
+        rounded_start_lat = _rounded(start_lat)
+        rounded_start_lng = _rounded(start_lng)
+        rounded_end_lat = _rounded(end_lat)
+        rounded_end_lng = _rounded(end_lng)
+
+        origin_spread[(rounded_start_lat, rounded_start_lng, member_casual, rideable_type)] += 1
+        coord_pairs[(rounded_start_lat, rounded_start_lng, rounded_end_lat, rounded_end_lng)] += 1
+
+        if start_lat is not None and start_lng is not None and end_lat is not None and end_lng is not None:
+            distance_miles = _haversine_miles(
+                start_lat,
+                start_lng,
+                end_lat,
+                end_lng,
+            )
+            estimated_minutes = (distance_miles / ESTIMATED_SPEED_MPH) * 60
+            estimated_duration_total += estimated_minutes
+            actual_duration_with_estimate_total += actual_minutes
+            estimated_trip_count += 1
+
+            group_key = (member_casual, rideable_type)
+            group_stats = actual_vs_estimated.setdefault(
+                group_key,
+                {
+                    "memberCasual": member_casual,
+                    "rideableType": rideable_type,
+                    "tripCount": 0,
+                    "averageActualMinutes": 0.0,
+                    "averageEstimatedMinutes": 0.0,
+                },
+            )
+            group_stats["tripCount"] = int(group_stats["tripCount"]) + 1
+            group_stats["averageActualMinutes"] = float(group_stats["averageActualMinutes"]) + actual_minutes
+            group_stats["averageEstimatedMinutes"] = float(group_stats["averageEstimatedMinutes"]) + estimated_minutes
+
+    summary = {
+        "tripCount": total_trips,
+        "averageActualMinutes": (actual_duration_with_estimate_total / estimated_trip_count) if estimated_trip_count else 0.0,
+        "averageEstimatedMinutes": (estimated_duration_total / estimated_trip_count) if estimated_trip_count else 0.0,
+        "averageDeltaMinutes": (
+            (actual_duration_with_estimate_total / estimated_trip_count) - (estimated_duration_total / estimated_trip_count)
+            if estimated_trip_count
+            else 0.0
+        ),
+    }
+
+    def _finalize_average(payload: dict[str, float | int | str]) -> dict[str, float | int | str]:
+        trip_count = int(payload["tripCount"])
+        if trip_count:
+            payload["averageDurationMinutes"] = float(payload["averageDurationMinutes"]) / trip_count
+        return payload
+
+    duration_by_hour_rows = [
+        _finalize_average(bucket)
+        for _, bucket in sorted(duration_by_hour.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+
+    actual_vs_estimated_rows = []
+    for _, bucket in sorted(actual_vs_estimated.items(), key=lambda item: (item[0][0], item[0][1])):
+        trip_count = int(bucket["tripCount"])
+        average_actual = float(bucket["averageActualMinutes"]) / trip_count if trip_count else 0.0
+        average_estimated = float(bucket["averageEstimatedMinutes"]) / trip_count if trip_count else 0.0
+        actual_vs_estimated_rows.append(
+            {
+                "memberCasual": bucket["memberCasual"],
+                "rideableType": bucket["rideableType"],
+                "tripCount": trip_count,
+                "averageActualMinutes": average_actual,
+                "averageEstimatedMinutes": average_estimated,
+                "deltaMinutes": average_actual - average_estimated,
+            }
+        )
+
+    return {
+        "summary": summary,
+        "stationUsage": sorted(
+            station_usage.values(),
+            key=lambda item: (-_coerce_int(item["totalTrips"]), str(item["stationName"]), str(item["stationId"])),
+        )[:top_n],
+        "histogramByBikeType": [
+            {"rideableType": key, "tripCount": value}
+            for key, value in sorted(histogram_by_bike.items(), key=lambda item: item[0])
+        ],
+        "histogramByRiderType": [
+            {"memberCasual": key, "tripCount": value}
+            for key, value in sorted(histogram_by_rider.items(), key=lambda item: item[0])
+        ],
+        "durationByHour": duration_by_hour_rows,
+        "originSpread": [
+            {
+                "startLat": item[0],
+                "startLng": item[1],
+                "memberCasual": item[2],
+                "rideableType": item[3],
+                "tripCount": value,
+            }
+            for item, value in sorted(origin_spread.items(), key=lambda entry: (-entry[1], str(entry[0])))[:top_n]
+        ],
+        "stationFlow": [
+            {
+                "startStationName": item[0],
+                "startStationId": item[1],
+                "endStationName": item[2],
+                "endStationId": item[3],
+                "tripCount": value,
+            }
+            for item, value in sorted(station_flow.items(), key=lambda entry: (-entry[1], str(entry[0])))[:top_n]
+        ],
+        "coordinatePairs": [
+            {
+                "startLat": item[0],
+                "startLng": item[1],
+                "endLat": item[2],
+                "endLng": item[3],
+                "tripCount": value,
+            }
+            for item, value in sorted(coord_pairs.items(), key=lambda entry: (-entry[1], str(entry[0])))[:top_n]
+        ],
+        "actualVsEstimated": actual_vs_estimated_rows,
+        "estimatedSpeedMph": ESTIMATED_SPEED_MPH,
+    }
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server on 127.0.0.1:8000")
