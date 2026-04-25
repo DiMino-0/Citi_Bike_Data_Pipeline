@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import "./App.css";
+import { useQuery } from "@tanstack/react-query";
 
 type MonthCount = {
   tripMonth: string;
@@ -366,121 +367,91 @@ function parseDashboardSummary(value: unknown): DashboardSummary | null {
 }
 
 function App() {
-  const [monthlyTripCounts, setMonthlyTripCounts] = useState<MonthCount[]>([]);
-  const [feeRows, setFeeRows] = useState<FeeSummary[]>([]);
-  const [bucketRows, setBucketRows] = useState<BucketSummary[]>([]);
-  const [dashboardSummary, setDashboardSummary] =
-    useState<DashboardSummary | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [selectedRider, setSelectedRider] = useState<
     "all" | "member" | "casual"
   >("all");
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string>("");
+
+  const {
+    data: monthlyTripCounts = [],
+    isLoading: isLoadingMonths,
+    error: monthsError,
+  } = useQuery({
+    queryKey: ["monthlyTripCounts"],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/api/analytics/monthly-trip-counts`,
+      );
+      if (!response.ok) throw new Error("Unable to load monthly trip counts.");
+      const payload: unknown = await response.json();
+      return parseMonthCounts(payload);
+    },
+  });
 
   const months = useMemo(
     () => monthlyTripCounts.map((item) => item.tripMonth),
     [monthlyTripCounts],
   );
 
-  useEffect(() => {
-    const loadMonths = async () => {
-      try {
-        setLoading(true);
-        setError("");
-        const response = await fetch(
-          `${API_BASE}/api/analytics/monthly-trip-counts`,
-        );
-        if (!response.ok) {
-          throw new Error("Unable to load monthly trip counts.");
-        }
+  const effectiveSelectedMonth =
+    selectedMonth || months[months.length - 1] || "";
 
-        const payload: unknown = await response.json();
-        const data = parseMonthCounts(payload);
-        setMonthlyTripCounts(data);
-
-        if (data.length > 0) {
-          setSelectedMonth(
-            (current) => current || data[data.length - 1].tripMonth,
-          );
-        }
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unknown error loading month data.",
-        );
-      } finally {
-        setLoading(false);
+  const {
+    data: analyticsData,
+    isLoading: isLoadingAnalytics,
+    error: analyticsError,
+  } = useQuery({
+    queryKey: ["analytics", effectiveSelectedMonth, selectedRider],
+    queryFn: async () => {
+      if (!effectiveSelectedMonth)
+        return {
+          feeRows: [],
+          bucketRows: [],
+          dashboardSummary: null,
+        };
+      const params = new URLSearchParams({
+        month: effectiveSelectedMonth,
+        rider: selectedRider,
+      });
+      const [feeResponse, bucketResponse, dashboardResponse] =
+        await Promise.all([
+          fetch(
+            `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
+          ),
+          fetch(
+            `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=5`,
+          ),
+          fetch(
+            `${API_BASE}/api/analytics/dashboard-summary?${params.toString()}`,
+          ),
+        ]);
+      if (!feeResponse.ok || !bucketResponse.ok || !dashboardResponse.ok) {
+        throw new Error("Unable to load filtered analytics data.");
       }
-    };
+      const feePayload: unknown = await feeResponse.json();
+      const bucketPayload: unknown = await bucketResponse.json();
+      const dashboardPayload: unknown = await dashboardResponse.json();
+      return {
+        feeRows: parseFeeSummary(feePayload),
+        bucketRows: parseBucketSummary(bucketPayload),
+        dashboardSummary: parseDashboardSummary(dashboardPayload),
+      };
+    },
+    enabled: !!effectiveSelectedMonth,
+  });
 
-    void loadMonths();
-  }, []);
-
-  useEffect(() => {
-    if (!selectedMonth) {
-      return;
-    }
-
-    const loadFilteredData = async () => {
-      try {
-        setLoading(true);
-        setError("");
-        const params = new URLSearchParams({
-          month: selectedMonth,
-          rider: selectedRider,
-        });
-
-        const [feeResponse, bucketResponse, dashboardResponse] =
-          await Promise.all([
-            fetch(
-              `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
-            ),
-            fetch(
-              `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=5`,
-            ),
-            fetch(
-              `${API_BASE}/api/analytics/dashboard-summary?${params.toString()}`,
-            ),
-          ]);
-
-        const [feeOk, bucketOk, dashboardOk] = [
-          feeResponse.ok,
-          bucketResponse.ok,
-          dashboardResponse.ok,
-        ];
-
-        if (!feeOk || !bucketOk || !dashboardOk) {
-          throw new Error("Unable to load filtered analytics data.");
-        }
-
-        const feePayload: unknown = await feeResponse.json();
-        const bucketPayload: unknown = await bucketResponse.json();
-        const dashboardPayload: unknown = await dashboardResponse.json();
-        const feeData = parseFeeSummary(feePayload);
-        const bucketData = parseBucketSummary(bucketPayload);
-        const dashboardData = parseDashboardSummary(dashboardPayload);
-
-        setFeeRows(feeData);
-        setBucketRows(bucketData);
-        setDashboardSummary(dashboardData);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unknown error loading analytics data.",
-        );
-        setFeeRows([]);
-        setBucketRows([]);
-        setDashboardSummary(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadFilteredData();
-  }, [selectedMonth, selectedRider]);
+  const feeRows = useMemo(
+    () => analyticsData?.feeRows ?? [],
+    [analyticsData?.feeRows],
+  );
+  const bucketRows = useMemo(
+    () => analyticsData?.bucketRows ?? [],
+    [analyticsData?.bucketRows],
+  );
+  const dashboardSummary = useMemo(
+    () => analyticsData?.dashboardSummary ?? null,
+    [analyticsData?.dashboardSummary],
+  );
 
   const currentMonthTotals = useMemo(() => {
     const feeTrips = feeRows.reduce(
@@ -504,6 +475,85 @@ function App() {
         <h1>Citi Bike SQL Results</h1>
         <p>Minimal dashboard backed by FastAPI analytics endpoints.</p>
       </header>
+
+      <section className="panel" aria-label="monthly trip counts">
+        <h2>Monthly Trip Counts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Trip Month</th>
+              <th>Trip Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monthlyTripCounts.map((row) => (
+              <tr key={row.tripMonth}>
+                <td>{row.tripMonth}</td>
+                <td>{row.tripCount.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="panel" aria-label="lost bike fee summary">
+        <h2>Lost Bike Fee by Rider Type</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Rider</th>
+              <th>Fee Trips</th>
+              <th>Total Trips</th>
+              <th>Fee %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {feeRows.map((row) => {
+              const pct =
+                row.totalTrips === 0
+                  ? 0
+                  : (row.lostBikeFeeTrips / row.totalTrips) * 100;
+
+              return (
+                <tr key={`${row.tripMonth}-${row.memberCasual}`}>
+                  <td>{row.tripMonth}</td>
+                  <td>{row.memberCasual}</td>
+                  <td>{row.lostBikeFeeTrips.toLocaleString()}</td>
+                  <td>{row.totalTrips.toLocaleString()}</td>
+                  <td>{pct.toFixed(2)}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="panel" aria-label="duration bucket summary">
+        <h2>5-Minute Duration Buckets</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Rider</th>
+              <th>Bucket</th>
+              <th>Trips</th>
+              <th>Fee Flag</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bucketRows.map((row) => (
+              <tr key={`${row.tripMonth}-${row.memberCasual}-${row.bucket}`}>
+                <td>{row.tripMonth}</td>
+                <td>{row.memberCasual}</td>
+                <td>{row.bucket}</td>
+                <td>{row.trips.toLocaleString()}</td>
+                <td>{row.lostBikeFeeFlag ? "yes" : "no"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
 
       <section className="panel" aria-label="computed elements">
         <h2>Computed Elements</h2>
@@ -718,14 +768,21 @@ function App() {
         )}
       </section>
 
-      {error ? <p className="status-error">{error}</p> : null}
-      {loading ? <p className="status-loading">Loading data...</p> : null}
+      {monthsError ? (
+        <p className="status-error">{monthsError.message}</p>
+      ) : null}
+      {analyticsError ? (
+        <p className="status-error">{analyticsError.message}</p>
+      ) : null}
+      {isLoadingMonths || isLoadingAnalytics ? (
+        <p className="status-loading">Loading data...</p>
+      ) : null}
 
       <section className="filters" aria-label="filters">
         <label>
           Month
           <select
-            value={selectedMonth}
+            value={effectiveSelectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
             disabled={months.length === 0}
           >
@@ -746,7 +803,7 @@ function App() {
                 event.target.value as "all" | "member" | "casual",
               )
             }
-            disabled={!selectedMonth}
+            disabled={!effectiveSelectedMonth}
           >
             <option value="all">all</option>
             <option value="member">member</option>
@@ -768,85 +825,6 @@ function App() {
           <h2>Lost Bike Fee %</h2>
           <strong>{currentMonthTotals.feePct.toFixed(2)}%</strong>
         </article>
-      </section>
-
-      <section className="panel" aria-label="monthly trip counts">
-        <h2>Monthly Trip Counts</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Trip Month</th>
-              <th>Trip Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {monthlyTripCounts.map((row) => (
-              <tr key={row.tripMonth}>
-                <td>{row.tripMonth}</td>
-                <td>{row.tripCount.toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="panel" aria-label="lost bike fee summary">
-        <h2>Lost Bike Fee by Rider Type</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Month</th>
-              <th>Rider</th>
-              <th>Fee Trips</th>
-              <th>Total Trips</th>
-              <th>Fee %</th>
-            </tr>
-          </thead>
-          <tbody>
-            {feeRows.map((row) => {
-              const pct =
-                row.totalTrips === 0
-                  ? 0
-                  : (row.lostBikeFeeTrips / row.totalTrips) * 100;
-
-              return (
-                <tr key={`${row.tripMonth}-${row.memberCasual}`}>
-                  <td>{row.tripMonth}</td>
-                  <td>{row.memberCasual}</td>
-                  <td>{row.lostBikeFeeTrips.toLocaleString()}</td>
-                  <td>{row.totalTrips.toLocaleString()}</td>
-                  <td>{pct.toFixed(2)}%</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="panel" aria-label="duration bucket summary">
-        <h2>5-Minute Duration Buckets</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Month</th>
-              <th>Rider</th>
-              <th>Bucket</th>
-              <th>Trips</th>
-              <th>Fee Flag</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bucketRows.map((row) => (
-              <tr key={`${row.tripMonth}-${row.memberCasual}-${row.bucket}`}>
-                <td>{row.tripMonth}</td>
-                <td>{row.memberCasual}</td>
-                <td>{row.bucket}</td>
-                <td>{row.trips.toLocaleString()}</td>
-                <td>{row.lostBikeFeeFlag ? "yes" : "no"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </section>
     </main>
   );

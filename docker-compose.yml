@@ -36,8 +36,8 @@ services:
     environment:
       # DB_URL comes from ./server/.env (remote DB in your current setup).
       SEED_DATA_DIR: ${SEED_DATA_DIR:-/app/scratch/data}
-      ENABLE_STARTUP_SEED: ${ENABLE_STARTUP_SEED:-true}
-      STARTUP_SEED_RANGE: ${STARTUP_SEED_RANGE:-2013..202511}
+      ENABLE_STARTUP_SEED: ${ENABLE_STARTUP_SEED:-false}
+      # STARTUP_SEED_RANGE: ${STARTUP_SEED_RANGE:-2013..202511}
       # STARTUP_SEED_MONTH: ${STARTUP_SEED_MONTH:-202511}
       STARTUP_SEED_INGEST_IF_MISSING: ${STARTUP_SEED_INGEST_IF_MISSING:-true}
       STARTUP_SEED_BACKFILL_MISSING_ROWS: ${STARTUP_SEED_BACKFILL_MISSING_ROWS:-false}
@@ -75,5 +75,3 @@ networks:
 volumes:
   postgres_data:
     driver: local
-
-# docker compose --profile local-db up --build -d

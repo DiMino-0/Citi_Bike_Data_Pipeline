@@ -1,4 +1,5 @@
 import os
+import glob
 import logging
 import asyncio
 import fcntl
@@ -7,28 +8,17 @@ from datetime import datetime
 from collections import defaultdict
 from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
-from typing import SupportsInt, cast
+from typing import Any, SupportsInt, cast
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from database.db import check_db_connection, get_engine, get_session
+from database.models import CitiBikeTrip
 from database.seed import run_seed
 from fastapi import FastAPI, HTTPException, Query
-from sqlalchemy import text
+from pydantic import BaseModel
+from sqlalchemy import Float, Integer, String, case, cast as sa_cast, func, inspect, literal, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 import uvicorn
-
-
-_LOCK_EX = getattr(fcntl, "LOCK_EX", 2)
-_LOCK_NB = getattr(fcntl, "LOCK_NB", 4)
-_LOCK_UN = getattr(fcntl, "LOCK_UN", 8)
-
-
-def _flock(fd: int, operation: int) -> None:
-    flock_fn = getattr(fcntl, "flock", None)
-    if flock_fn is None:
-        raise OSError("fcntl.flock is unavailable on this platform")
-    flock_fn(fd, operation)
-
-
 if not logging.getLogger().handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -39,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 EARTH_RADIUS_MILES = 3958.7613
 ESTIMATED_SPEED_MPH = 10.0
+_LOCK_EX = getattr(fcntl, "LOCK_EX")
+_LOCK_NB = getattr(fcntl, "LOCK_NB")
+_LOCK_UN = getattr(fcntl, "LOCK_UN")
+_flock = getattr(fcntl, "flock")
 
 
 def _query_source() -> str:
@@ -50,8 +44,44 @@ def _query_source() -> str:
 
 
 def _parquet_glob() -> str:
-    default_glob = str(Path(__file__).resolve().parent / "scratch" / "data" / "data*.parquet")
-    return os.getenv("DEMO_PARQUET_GLOB", default_glob)
+    base_dir = Path(__file__).resolve().parent
+    default_glob = base_dir / "scratch" / "data" / "data*.parquet"
+
+    raw_glob = os.getenv("DEMO_PARQUET_GLOB")
+    if not raw_glob:
+        return default_glob.as_posix()
+
+    glob_path = Path(raw_glob)
+    if not glob_path.is_absolute():
+        glob_path = base_dir / glob_path
+
+    return glob_path.as_posix()
+
+
+def _parquet_files() -> list[str]:
+    candidate_files = [Path(path) for path in glob.glob(_parquet_glob())]
+    valid_files: list[str] = []
+
+    for file_path in candidate_files:
+        try:
+            with file_path.open("rb") as parquet_file:
+                header = parquet_file.read(4)
+                if header != b"PAR1":
+                    logger.warning("Skipping non-parquet file %s", file_path)
+                    continue
+
+                parquet_file.seek(-4, os.SEEK_END)
+                footer = parquet_file.read(4)
+                if footer != b"PAR1":
+                    logger.warning("Skipping truncated parquet file %s", file_path)
+                    continue
+        except OSError:
+            logger.exception("Unable to inspect parquet file %s", file_path)
+            continue
+
+        valid_files.append(file_path.as_posix())
+
+    return valid_files
 
 
 def _is_parquet_source() -> bool:
@@ -101,18 +131,32 @@ async def _query_rows(
     parquet_query: str | None = None,
     parquet_params: list[object] | None = None,
 ) -> list[dict[str, object]]:
-    if _is_parquet_source():
-        if parquet_query is None:
-            parquet_query = db_query
-            parquet_params = []
-        return _duckdb_rows(parquet_query, parquet_params)
+    async def _fetch_db_rows() -> list[dict[str, object]]:
+        async for session in get_session():
+            result = await session.execute(text(db_query), db_params or {})
+            rows = result.mappings().all()
+            return [dict(row) for row in rows]
+        return []
 
-    async for session in get_session():
-        result = await session.execute(text(db_query), db_params or {})
-        rows = result.mappings().all()
-        return [dict(row) for row in rows]
+    def _fetch_parquet_rows() -> list[dict[str, object]]:
+        query = parquet_query if parquet_query is not None else db_query
+        params = parquet_params if parquet_query is not None else []
+        return _duckdb_rows(query, params)
 
-    return []
+    try:
+        if _is_parquet_source():
+            return _fetch_parquet_rows()
+        return await _fetch_db_rows()
+    except Exception:
+        logger.exception("Primary query source failed")
+
+    try:
+        if _is_parquet_source():
+            return await _fetch_db_rows()
+        return _fetch_parquet_rows()
+    except Exception:
+        logger.exception("Fallback query source failed")
+        return []
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -131,6 +175,26 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logger.warning("Invalid integer for %s=%r. Using default=%d", name, raw, default)
         return default
+
+
+def _analytics_query_timeout_ms() -> int:
+    # Keep analytics queries bounded to avoid upstream gateway timeouts.
+    return max(1000, _env_int("ANALYTICS_QUERY_TIMEOUT_MS", 25000))
+
+
+async def _execute_with_statement_timeout(session: AsyncSession, stmt: Any):
+    """Execute a SQLAlchemy statement with a local statement timeout when supported."""
+    timeout_ms = _analytics_query_timeout_ms()
+    try:
+        # PostgreSQL: timeout scoped to current transaction.
+        await session.execute(
+            text("SELECT set_config('statement_timeout', :timeout, true)"),
+            {"timeout": f"{timeout_ms}ms"},
+        )
+    except Exception:
+        # Non-Postgres or unsupported dialect: continue without timeout setting.
+        pass
+    return await session.execute(stmt)
 
 
 def _haversine_miles(
@@ -366,6 +430,11 @@ async def lifespan(_: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+class MonthlyTripCountResponse(BaseModel):
+    tripMonth: str
+    tripCount: int
+
+
 @app.get("/api")
 
 async def root():
@@ -394,32 +463,64 @@ async def session_info():
         return {"session_info": str(session)}
 
 
-@app.get("/api/analytics/monthly-trip-counts")
+@app.get("/api/analytics/monthly-trip-counts", response_model=list[MonthlyTripCountResponse])
 async def analytics_monthly_trip_counts():
-    db_query = """
-        SELECT trip_month, COUNT(*) AS trip_count
-        FROM citibike_trips
-        GROUP BY trip_month
-        ORDER BY trip_month
-        """
-    parquet_query = """
-        SELECT trip_month, COUNT(*) AS trip_count
-        FROM read_parquet(?, union_by_name=true)
-        GROUP BY trip_month
-        ORDER BY trip_month
-        """
-    rows = await _query_rows(
-        db_query=db_query,
-        parquet_query=parquet_query,
-        parquet_params=[_parquet_glob()],
-    )
-    return [
-        {
-            "tripMonth": row["trip_month"],
-            "tripCount": _coerce_int(row["trip_count"]),
-        }
-        for row in rows
-    ]
+    try:
+        db_query = """
+            SELECT trip_month, COUNT(*) AS trip_count
+            FROM citibike_trips
+            WHERE trip_month IS NOT NULL
+            GROUP BY trip_month
+            ORDER BY trip_month
+            """
+        parquet_query = """
+            SELECT trip_month, COUNT(*) AS trip_count
+            FROM read_parquet(?, union_by_name=true)
+            WHERE trip_month IS NOT NULL
+            GROUP BY trip_month
+            ORDER BY trip_month
+            """
+
+        rows: list[dict[str, object]] = []
+
+        async def _fetch_db_rows() -> list[dict[str, object]]:
+            async for session in get_session():
+                result = await session.execute(text(db_query))
+                return [dict(row) for row in result.mappings().all()]
+            return []
+
+        try:
+            if _is_parquet_source():
+                rows = _duckdb_rows(parquet_query, [_parquet_files()])
+            else:
+                rows = await _fetch_db_rows()
+        except Exception:
+            logger.exception("Monthly trip counts query failed for primary source")
+            try:
+                if _is_parquet_source():
+                    rows = await _fetch_db_rows()
+                else:
+                    rows = _duckdb_rows(parquet_query, [_parquet_glob()])
+            except Exception:
+                logger.exception("Monthly trip counts query failed for fallback source")
+                return []
+
+        response: list[dict[str, object]] = []
+        for row in rows:
+            trip_month = row.get("trip_month") if isinstance(row, dict) else None
+            trip_count = row.get("trip_count") if isinstance(row, dict) else None
+            if trip_month is None or trip_count is None:
+                continue
+            response.append(
+                {
+                    "tripMonth": str(trip_month),
+                    "tripCount": _coerce_int(trip_count),
+                }
+            )
+        return response
+    except Exception:
+        logger.exception("Monthly trip counts endpoint failed")
+        return []
 
 
 @app.get("/api/analytics/lost-bike-fee-summary")
@@ -427,27 +528,6 @@ async def analytics_lost_bike_fee_summary(
     month: str = Query(..., min_length=6, max_length=6),
     rider: str = Query("all", pattern="^(all|member|casual)$"),
 ):
-    db_query = """
-        WITH durations AS (
-            SELECT
-                trip_month,
-                LOWER(member_casual) AS member_casual,
-                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60))::int AS duration_min
-            FROM citibike_trips
-            WHERE ended_at IS NOT NULL
-              AND started_at IS NOT NULL
-              AND trip_month = :month
-              AND (:rider = 'all' OR LOWER(member_casual) = :rider)
-        )
-        SELECT
-            trip_month,
-            member_casual,
-            COUNT(*) FILTER (WHERE duration_min > 1440) AS lost_bike_fee_trips,
-            COUNT(*) AS total_trips
-        FROM durations
-        GROUP BY trip_month, member_casual
-        ORDER BY member_casual
-        """
     parquet_query = """
         WITH durations AS (
             SELECT
@@ -469,12 +549,58 @@ async def analytics_lost_bike_fee_summary(
         GROUP BY trip_month, member_casual
         ORDER BY member_casual
         """
-    rows = await _query_rows(
-        db_query=db_query,
-        db_params={"month": month, "rider": rider},
-        parquet_query=parquet_query,
-        parquet_params=[_parquet_glob(), month, rider, rider],
-    )
+
+    async def _fetch_db_rows() -> list[dict[str, object]]:
+        t = inspect(CitiBikeTrip).c
+        duration_seconds = func.extract("epoch", t.ended_at) - func.extract("epoch", t.started_at)
+        duration_min = sa_cast(
+            func.greatest(
+                literal(0),
+                func.floor(duration_seconds / 60.0),
+            ),
+            Integer,
+        )
+
+        stmt = (
+            select(
+                t.trip_month.label("trip_month"),
+                func.lower(t.member_casual).label("member_casual"),
+                func.count().filter(duration_min > 1440).label("lost_bike_fee_trips"),
+                func.count().label("total_trips"),
+            )
+            .where(
+                t.ended_at.is_not(None),
+                t.started_at.is_not(None),
+                t.trip_month == month,
+            )
+            .group_by(t.trip_month, func.lower(t.member_casual))
+            .order_by(func.lower(t.member_casual))
+        )
+        if rider != "all":
+            stmt = stmt.where(func.lower(t.member_casual) == rider)
+
+        async for session in get_session():
+            result = await _execute_with_statement_timeout(session, stmt)
+            return [dict(row) for row in result.mappings().all()]
+        return []
+
+    rows: list[dict[str, object]] = []
+    try:
+        if _is_parquet_source():
+            rows = _duckdb_rows(parquet_query, [_parquet_files(), month, rider, rider])
+        else:
+            rows = await _fetch_db_rows()
+    except Exception:
+        logger.exception("Lost bike fee summary query failed for primary source")
+        try:
+            if _is_parquet_source():
+                rows = await _fetch_db_rows()
+            else:
+                rows = _duckdb_rows(parquet_query, [_parquet_glob(), month, rider, rider])
+        except Exception:
+            logger.exception("Lost bike fee summary query failed for fallback source")
+            rows = []
+
     return [
         {
             "tripMonth": row["trip_month"],
@@ -492,46 +618,6 @@ async def analytics_duration_buckets(
     rider: str = Query("all", pattern="^(all|member|casual)$"),
     bucket_minutes: int = Query(5, ge=1, le=60),
 ):
-    db_query = """
-        WITH durations AS (
-            SELECT
-                trip_month,
-                LOWER(member_casual) AS member_casual,
-                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60))::int AS duration_min
-            FROM citibike_trips
-            WHERE ended_at IS NOT NULL
-              AND started_at IS NOT NULL
-              AND trip_month = :month
-              AND (:rider = 'all' OR LOWER(member_casual) = :rider)
-        ), bucketed AS (
-            SELECT
-                d.trip_month,
-                d.member_casual,
-                d.duration_min,
-                CASE
-                    WHEN d.duration_min > 1440 THEN 'LOST_BIKE_FEE'
-                    ELSE CONCAT(
-                        LPAD(((d.duration_min / :bucket_minutes) * :bucket_minutes)::text, 4, '0'),
-                        '-',
-                        LPAD((((d.duration_min / :bucket_minutes) * :bucket_minutes) + :bucket_minutes - 1)::text, 4, '0'),
-                        ' min'
-                    )
-                END AS duration_bucket
-            FROM durations d
-        )
-        SELECT
-            trip_month,
-            member_casual,
-            duration_bucket,
-            COUNT(*) AS trips,
-            (COUNT(*) FILTER (WHERE duration_min > 1440) > 0) AS lost_bike_fee_flag
-        FROM bucketed
-        GROUP BY trip_month, member_casual, duration_bucket
-        ORDER BY
-            member_casual,
-            CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
-            duration_bucket
-        """
     parquet_query = """
         WITH durations AS (
             SELECT
@@ -571,22 +657,112 @@ async def analytics_duration_buckets(
             CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
             duration_bucket
         """
-    rows = await _query_rows(
-        db_query=db_query,
-        db_params={"month": month, "rider": rider, "bucket_minutes": bucket_minutes},
-        parquet_query=parquet_query,
-        parquet_params=[
-            _parquet_glob(),
-            month,
-            rider,
-            rider,
-            bucket_minutes,
-            bucket_minutes,
-            bucket_minutes,
-            bucket_minutes,
-            bucket_minutes,
-        ],
-    )
+
+    async def _fetch_db_rows() -> list[dict[str, object]]:
+        t = inspect(CitiBikeTrip).c
+        duration_seconds = func.extract("epoch", t.ended_at) - func.extract("epoch", t.started_at)
+        duration_min = sa_cast(
+            func.greatest(
+                literal(0),
+                func.floor(duration_seconds / 60.0),
+            ),
+            Integer,
+        )
+        bucket_floor = sa_cast(
+            func.floor(sa_cast(duration_min, Float) / bucket_minutes) * bucket_minutes,
+            Integer,
+        )
+        bucket_label = case(
+            (duration_min > 1440, literal("LOST_BIKE_FEE")),
+            else_=func.concat(
+                func.lpad(sa_cast(bucket_floor, String), 4, "0"),
+                "-",
+                func.lpad(sa_cast(bucket_floor + (bucket_minutes - 1), String), 4, "0"),
+                " min",
+            ),
+        )
+
+        bucketed = (
+            select(
+                t.trip_month.label("trip_month"),
+                func.lower(t.member_casual).label("member_casual"),
+                duration_min.label("duration_min"),
+                bucket_label.label("duration_bucket"),
+            )
+            .where(
+                t.ended_at.is_not(None),
+                t.started_at.is_not(None),
+                t.trip_month == month,
+            )
+            .subquery()
+        )
+
+        stmt = (
+            select(
+                bucketed.c.trip_month,
+                bucketed.c.member_casual,
+                bucketed.c.duration_bucket,
+                func.count().label("trips"),
+                func.bool_or(bucketed.c.duration_min > 1440).label("lost_bike_fee_flag"),
+            )
+            .group_by(bucketed.c.trip_month, bucketed.c.member_casual, bucketed.c.duration_bucket)
+            .order_by(
+                bucketed.c.member_casual,
+                case((bucketed.c.duration_bucket == "LOST_BIKE_FEE", 1), else_=0),
+                bucketed.c.duration_bucket,
+            )
+        )
+        if rider != "all":
+            stmt = stmt.where(bucketed.c.member_casual == rider)
+
+        async for session in get_session():
+            result = await _execute_with_statement_timeout(session, stmt)
+            return [dict(row) for row in result.mappings().all()]
+        return []
+
+    rows: list[dict[str, object]] = []
+    try:
+        if _is_parquet_source():
+            rows = _duckdb_rows(
+                parquet_query,
+                [
+                    _parquet_files(),
+                    month,
+                    rider,
+                    rider,
+                    bucket_minutes,
+                    bucket_minutes,
+                    bucket_minutes,
+                    bucket_minutes,
+                    bucket_minutes,
+                ],
+            )
+        else:
+            rows = await _fetch_db_rows()
+    except Exception:
+        logger.exception("Duration buckets query failed for primary source")
+        try:
+            if _is_parquet_source():
+                rows = await _fetch_db_rows()
+            else:
+                rows = _duckdb_rows(
+                    parquet_query,
+                    [
+                        _parquet_glob(),
+                        month,
+                        rider,
+                        rider,
+                        bucket_minutes,
+                        bucket_minutes,
+                        bucket_minutes,
+                        bucket_minutes,
+                        bucket_minutes,
+                    ],
+                )
+        except Exception:
+            logger.exception("Duration buckets query failed for fallback source")
+            rows = []
+
     return [
         {
             "tripMonth": row["trip_month"],
@@ -605,26 +781,6 @@ async def analytics_dashboard_summary(
     rider: str = Query("all", pattern="^(all|member|casual)$"),
     top_n: int = Query(10, ge=1, le=50),
 ):
-    db_query = """
-        SELECT
-            rideable_type,
-            LOWER(member_casual) AS member_casual,
-            started_at,
-            ended_at,
-            start_station_name,
-            start_station_id,
-            end_station_name,
-            end_station_id,
-            start_lat,
-            start_lng,
-            end_lat,
-            end_lng
-        FROM citibike_trips
-        WHERE trip_month = :month
-          AND started_at IS NOT NULL
-          AND ended_at IS NOT NULL
-          AND (:rider = 'all' OR LOWER(member_casual) = :rider)
-        """
     parquet_query = """
         SELECT
             rideable_type,
@@ -645,12 +801,56 @@ async def analytics_dashboard_summary(
           AND ended_at IS NOT NULL
           AND (? = 'all' OR LOWER(member_casual) = ?)
         """
-    rows = await _query_rows(
-        db_query=db_query,
-        db_params={"month": month, "rider": rider},
-        parquet_query=parquet_query,
-        parquet_params=[_parquet_glob(), month, rider, rider],
-    )
+
+    async def _fetch_db_rows() -> list[dict[str, object]]:
+        t = inspect(CitiBikeTrip).c
+        max_dashboard_rows = max(1000, _env_int("ANALYTICS_DASHBOARD_MAX_ROWS", 200000))
+        stmt = (
+            select(
+                t.rideable_type.label("rideable_type"),
+                func.lower(t.member_casual).label("member_casual"),
+                t.started_at.label("started_at"),
+                t.ended_at.label("ended_at"),
+                t.start_station_name.label("start_station_name"),
+                t.start_station_id.label("start_station_id"),
+                t.end_station_name.label("end_station_name"),
+                t.end_station_id.label("end_station_id"),
+                t.start_lat.label("start_lat"),
+                t.start_lng.label("start_lng"),
+                t.end_lat.label("end_lat"),
+                t.end_lng.label("end_lng"),
+            )
+            .where(
+                t.trip_month == month,
+                t.started_at.is_not(None),
+                t.ended_at.is_not(None),
+            )
+            .limit(max_dashboard_rows)
+        )
+        if rider != "all":
+            stmt = stmt.where(func.lower(t.member_casual) == rider)
+
+        async for session in get_session():
+            result = await _execute_with_statement_timeout(session, stmt)
+            return [dict(row) for row in result.mappings().all()]
+        return []
+
+    rows: list[dict[str, object]] = []
+    try:
+        if _is_parquet_source():
+            rows = _duckdb_rows(parquet_query, [_parquet_glob(), month, rider, rider])
+        else:
+            rows = await _fetch_db_rows()
+    except Exception:
+        logger.exception("Dashboard summary query failed for primary source")
+        try:
+            if _is_parquet_source():
+                rows = await _fetch_db_rows()
+            else:
+                rows = _duckdb_rows(parquet_query, [_parquet_glob(), month, rider, rider])
+        except Exception:
+            logger.exception("Dashboard summary query failed for fallback source")
+            rows = []
 
     total_trips = 0
     actual_duration_total = 0.0
