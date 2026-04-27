@@ -118,6 +118,8 @@ const CHART_COLORS = {
 };
 
 const MAX_SCATTER_POINTS = 500;
+const DURATION_BUCKET_MINUTES_MIN = 1;
+const DURATION_BUCKET_MINUTES_MAX = 1400;
 
 function hashString(value: string): number {
   let hash = 0;
@@ -462,30 +464,30 @@ function App() {
   const [selectedRider, setSelectedRider] = useState<
     "all" | "member" | "casual"
   >("all");
+  const [selectedBucketMinutes, setSelectedBucketMinutes] = useState<number>(5);
+  const [isDurationBucketOpen, setIsDurationBucketOpen] =
+    useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<"overview" | "visualizations">(
     "overview",
   );
 
   const {
-    data: allMonthlyTripCounts = [],
+    data: allMonthNames = [],
     isLoading: isLoadingMonthOptions,
     error: monthOptionsError,
   } = useQuery({
-    queryKey: ["monthlyTripCounts", "all"],
+    queryKey: ["monthlyTripMonths"],
     queryFn: async () => {
       const response = await fetch(
         `${API_BASE}/api/analytics/monthly-trip-counts`,
       );
       if (!response.ok) throw new Error("Unable to load monthly trip counts.");
       const payload: unknown = await response.json();
-      return parseMonthCounts(payload);
+      return parseMonthCounts(payload).map((item) => item.tripMonth);
     },
   });
 
-  const months = useMemo(
-    () => allMonthlyTripCounts.map((item) => item.tripMonth),
-    [allMonthlyTripCounts],
-  );
+  const months = useMemo(() => allMonthNames, [allMonthNames]);
 
   const mostRecentMonth = months[months.length - 1] || "";
 
@@ -520,60 +522,111 @@ function App() {
     selectedMonth && selectedMonth !== "all" ? selectedMonth : mostRecentMonth;
 
   const {
-    data: analyticsData,
-    isLoading: isLoadingAnalytics,
-    error: analyticsError,
+    data: feeSummaryData,
+    isLoading: isLoadingFeeSummary,
+    error: feeSummaryError,
   } = useQuery({
-    queryKey: ["analytics", effectiveSelectedMonth, selectedRider],
+    queryKey: ["analytics-fee-summary", effectiveSelectedMonth, selectedRider],
     queryFn: async () => {
-      if (!effectiveSelectedMonth)
-        return {
-          feeRows: [],
-          bucketRows: [],
-          dashboardSummary: null,
-        };
+      if (!effectiveSelectedMonth) {
+        return [];
+      }
       const params = new URLSearchParams({
         month: effectiveSelectedMonth,
         rider: selectedRider,
       });
-      const [feeResponse, bucketResponse, dashboardResponse] =
-        await Promise.all([
-          fetch(
-            `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
-          ),
-          fetch(
-            `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=5`,
-          ),
-          fetch(
-            `${API_BASE}/api/analytics/dashboard-summary?${params.toString()}`,
-          ),
-        ]);
-      if (!feeResponse.ok || !bucketResponse.ok || !dashboardResponse.ok) {
-        throw new Error("Unable to load filtered analytics data.");
+      const response = await fetch(
+        `${API_BASE}/api/analytics/lost-bike-fee-summary?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error("Unable to load lost bike fee summary data.");
       }
-      const feePayload: unknown = await feeResponse.json();
-      const bucketPayload: unknown = await bucketResponse.json();
-      const dashboardPayload: unknown = await dashboardResponse.json();
-      return {
-        feeRows: parseFeeSummary(feePayload),
-        bucketRows: parseBucketSummary(bucketPayload),
-        dashboardSummary: parseDashboardSummary(dashboardPayload),
-      };
+      const payload: unknown = await response.json();
+      return parseFeeSummary(payload);
     },
     enabled: !!effectiveSelectedMonth,
   });
 
-  const feeRows = useMemo(
-    () => analyticsData?.feeRows ?? [],
-    [analyticsData?.feeRows],
+  const {
+    data: dashboardSummaryData,
+    isLoading: isLoadingDashboardSummary,
+    error: dashboardSummaryError,
+  } = useQuery({
+    queryKey: [
+      "analytics-dashboard-summary",
+      effectiveSelectedMonth,
+      selectedRider,
+    ],
+    queryFn: async () => {
+      if (!effectiveSelectedMonth) {
+        return null;
+      }
+      const params = new URLSearchParams({
+        month: effectiveSelectedMonth,
+        rider: selectedRider,
+      });
+      const response = await fetch(
+        `${API_BASE}/api/analytics/dashboard-summary?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error("Unable to load dashboard summary data.");
+      }
+      const payload: unknown = await response.json();
+      return parseDashboardSummary(payload);
+    },
+    enabled: !!effectiveSelectedMonth,
+  });
+
+  const {
+    data: durationBucketData,
+    isLoading: isLoadingDurationBuckets,
+    error: durationBucketError,
+  } = useQuery({
+    queryKey: [
+      "analytics-duration-buckets",
+      effectiveSelectedMonth,
+      selectedRider,
+      selectedBucketMinutes,
+    ],
+    queryFn: async () => {
+      if (!effectiveSelectedMonth) {
+        return [];
+      }
+      const params = new URLSearchParams({
+        month: effectiveSelectedMonth,
+        rider: selectedRider,
+      });
+      const response = await fetch(
+        `${API_BASE}/api/analytics/duration-buckets?${params.toString()}&bucket_minutes=${selectedBucketMinutes}`,
+      );
+      if (!response.ok) {
+        throw new Error("Unable to load duration bucket data.");
+      }
+      const payload: unknown = await response.json();
+      return parseBucketSummary(payload);
+    },
+    enabled: !!effectiveSelectedMonth,
+  });
+
+  const durationBucketMinuteOptions = useMemo(
+    () =>
+      Array.from(
+        {
+          length: DURATION_BUCKET_MINUTES_MAX - DURATION_BUCKET_MINUTES_MIN + 1,
+        },
+        (_, index) => DURATION_BUCKET_MINUTES_MIN + index,
+      ),
+    [],
   );
+
+  const feeRows = useMemo(() => feeSummaryData ?? [], [feeSummaryData]);
   const bucketRows = useMemo(
-    () => analyticsData?.bucketRows ?? [],
-    [analyticsData?.bucketRows],
+    () => durationBucketData ?? [],
+    [durationBucketData],
   );
   const dashboardSummary = useMemo(
-    () => analyticsData?.dashboardSummary ?? null,
-    [analyticsData?.dashboardSummary],
+    () => dashboardSummaryData ?? null,
+    [dashboardSummaryData],
   );
 
   const bikeHistogramChartData = useMemo(() => {
@@ -989,31 +1042,66 @@ function App() {
           </section>
 
           <section className="panel" aria-label="duration bucket summary">
-            <h2>Ride Duration by 5-Minute bucket</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Month</th>
-                  <th>Rider</th>
-                  <th>Bucket</th>
-                  <th>Trips</th>
-                  <th>Fee Flag</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bucketRows.map((row) => (
-                  <tr
-                    key={`${row.tripMonth}-${row.memberCasual}-${row.bucket}`}
-                  >
-                    <td>{row.tripMonth}</td>
-                    <td>{row.memberCasual}</td>
-                    <td>{row.bucket}</td>
-                    <td>{row.trips.toLocaleString()}</td>
-                    <td>{row.lostBikeFeeFlag ? "yes" : "no"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="panel-header panel-header-split">
+              <h2>Ride Duration by {selectedBucketMinutes}-Minute Bucket</h2>
+              <button
+                type="button"
+                className="toggle-button"
+                onClick={() => setIsDurationBucketOpen((current) => !current)}
+                aria-expanded={isDurationBucketOpen}
+                aria-controls="duration-bucket-content"
+              >
+                {isDurationBucketOpen ? "Collapse" : "Expand"}
+              </button>
+            </div>
+
+            <div className="duration-bucket-controls">
+              <label>
+                Bucket Minutes
+                <select
+                  value={selectedBucketMinutes}
+                  onChange={(event) =>
+                    setSelectedBucketMinutes(Number(event.target.value))
+                  }
+                  disabled={!effectiveSelectedMonth}
+                >
+                  {durationBucketMinuteOptions.map((minutes) => (
+                    <option key={minutes} value={minutes}>
+                      {minutes} minute{minutes === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {isDurationBucketOpen ? (
+              <div id="duration-bucket-content">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th>Rider</th>
+                      <th>Bucket</th>
+                      <th>Trips</th>
+                      <th>Fee Flag</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bucketRows.map((row) => (
+                      <tr
+                        key={`${row.tripMonth}-${row.memberCasual}-${row.bucket}`}
+                      >
+                        <td>{row.tripMonth}</td>
+                        <td>{row.memberCasual}</td>
+                        <td>{row.bucket}</td>
+                        <td>{row.trips.toLocaleString()}</td>
+                        <td>{row.lostBikeFeeFlag ? "yes" : "no"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </section>
 
           <section className="panel" aria-label="computed elements">
@@ -1254,10 +1342,20 @@ function App() {
       {monthsError ? (
         <p className="status-error">{monthsError.message}</p>
       ) : null}
-      {analyticsError ? (
-        <p className="status-error">{analyticsError.message}</p>
+      {feeSummaryError ? (
+        <p className="status-error">{feeSummaryError.message}</p>
       ) : null}
-      {isLoadingMonthOptions || isLoadingMonths || isLoadingAnalytics ? (
+      {dashboardSummaryError ? (
+        <p className="status-error">{dashboardSummaryError.message}</p>
+      ) : null}
+      {durationBucketError ? (
+        <p className="status-error">{durationBucketError.message}</p>
+      ) : null}
+      {isLoadingMonthOptions ||
+      isLoadingMonths ||
+      isLoadingFeeSummary ||
+      isLoadingDashboardSummary ||
+      isLoadingDurationBuckets ? (
         <p className="status-loading">Loading data...</p>
       ) : null}
     </main>

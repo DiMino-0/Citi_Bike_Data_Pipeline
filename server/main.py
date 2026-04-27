@@ -3,6 +3,7 @@ import glob
 import logging
 import asyncio
 import fcntl
+from functools import lru_cache
 from contextlib import asynccontextmanager
 from datetime import datetime
 from collections import defaultdict
@@ -153,18 +154,119 @@ async def _duckdb_rows_async(query: str, params: list[object] | None = None) -> 
     return await asyncio.to_thread(_duckdb_rows, query, params)
 
 
-async def _monthly_trip_counts_from_parquet(month: str | None, parquet_query: str) -> list[dict[str, object]]:
-    counts: dict[str, int] = defaultdict(int)
-    parquet_files = _parquet_files_for_month(month)
+@lru_cache(maxsize=256)
+def _parquet_columns_for_file(parquet_file: str) -> frozenset[str]:
+    try:
+        import duckdb
+    except ImportError:
+        logger.warning("DuckDB is unavailable; parquet schema inspection is disabled")
+        return frozenset()
 
+    con = duckdb.connect()
+    try:
+        con.execute("PRAGMA threads=2")
+        result = con.execute("DESCRIBE SELECT * FROM read_parquet(?, filename=true)", [parquet_file])
+        return frozenset(str(row[0]) for row in result.fetchall())
+    except Exception:
+        logger.exception("Unable to inspect parquet schema for %s", parquet_file)
+        return frozenset()
+    finally:
+        con.close()
+
+
+@lru_cache(maxsize=32)
+def _parquet_columns_for_files(parquet_files: tuple[str, ...]) -> frozenset[str]:
+    columns: set[str] = set()
     for parquet_file in parquet_files:
-        rows = await _duckdb_rows_async(parquet_query, [parquet_file, month, month])
-        for row in rows:
-            trip_month = row.get("trip_month") if isinstance(row, dict) else None
-            trip_count = row.get("trip_count") if isinstance(row, dict) else None
-            if trip_month is None or trip_count is None:
-                continue
-            counts[str(trip_month)] += _coerce_int(trip_count)
+        columns.update(_parquet_columns_for_file(parquet_file))
+    return frozenset(columns)
+
+
+def _sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _parquet_file_list_sql(parquet_files: list[str]) -> str:
+    if not parquet_files:
+        return "[]"
+    return "[" + ", ".join(_sql_string_literal(path) for path in parquet_files) + "]"
+
+
+def _parquet_source_expr(columns: frozenset[str], normalized_name: str, raw_name: str | None = None) -> str:
+    if normalized_name in columns:
+        return normalized_name
+    if raw_name is not None and raw_name in columns:
+        return f'"{raw_name}"'
+    return "NULL"
+
+
+def _parquet_trip_projection_sql(columns: frozenset[str], parquet_files_sql: str) -> str:
+    trip_month_expr = _parquet_trip_month_expr_sql()
+    ride_id_expr = _parquet_source_expr(columns, "ride_id")
+    rideable_type_expr = _parquet_source_expr(columns, "rideable_type")
+    started_at_expr = _parquet_source_expr(columns, "started_at", "Start Time")
+    ended_at_expr = _parquet_source_expr(columns, "ended_at", "End Time")
+    start_station_name_expr = _parquet_source_expr(columns, "start_station_name", "Start Station Name")
+    start_station_id_expr = _parquet_source_expr(columns, "start_station_id", "Start Station ID")
+    end_station_name_expr = _parquet_source_expr(columns, "end_station_name", "End Station Name")
+    end_station_id_expr = _parquet_source_expr(columns, "end_station_id", "End Station ID")
+    start_lat_expr = _parquet_source_expr(columns, "start_lat", "Start Station Latitude")
+    start_lng_expr = _parquet_source_expr(columns, "start_lng", "Start Station Longitude")
+    end_lat_expr = _parquet_source_expr(columns, "end_lat", "End Station Latitude")
+    end_lng_expr = _parquet_source_expr(columns, "end_lng", "End Station Longitude")
+    member_casual_expr = _parquet_source_expr(columns, "member_casual", "Member/Casual")
+
+    return f"""
+        SELECT
+            CAST({ride_id_expr} AS VARCHAR) AS ride_id,
+            CAST({rideable_type_expr} AS VARCHAR) AS rideable_type,
+            TRY_CAST({started_at_expr} AS TIMESTAMP) AS started_at,
+            TRY_CAST({ended_at_expr} AS TIMESTAMP) AS ended_at,
+            CAST({start_station_name_expr} AS VARCHAR) AS start_station_name,
+            CAST({start_station_id_expr} AS VARCHAR) AS start_station_id,
+            CAST({end_station_name_expr} AS VARCHAR) AS end_station_name,
+            CAST({end_station_id_expr} AS VARCHAR) AS end_station_id,
+            TRY_CAST({start_lat_expr} AS DOUBLE) AS start_lat,
+            TRY_CAST({start_lng_expr} AS DOUBLE) AS start_lng,
+            TRY_CAST({end_lat_expr} AS DOUBLE) AS end_lat,
+            TRY_CAST({end_lng_expr} AS DOUBLE) AS end_lng,
+            LOWER(CAST({member_casual_expr} AS VARCHAR)) AS member_casual,
+            {trip_month_expr} AS trip_month,
+            CURRENT_TIMESTAMP::TIMESTAMP AS created_at
+        FROM read_parquet({parquet_files_sql}, union_by_name=true, filename=true)
+    """
+
+
+async def _monthly_trip_counts_from_parquet(month: str | None) -> list[dict[str, object]]:
+    parquet_files = _parquet_files_for_month(month)
+    if not parquet_files:
+        return []
+
+    parquet_files_sql = _parquet_file_list_sql(parquet_files)
+    parquet_query = f"""
+        SELECT
+            trip_month,
+            COUNT(*) AS trip_count
+        FROM (
+            SELECT
+                NULLIF(regexp_extract(filename, 'data(\\d{{6}})\\.parquet$', 1), '') AS trip_month
+            FROM read_parquet({parquet_files_sql}, union_by_name=true, filename=true)
+            WHERE filename IS NOT NULL
+        ) AS monthly
+        WHERE trip_month IS NOT NULL
+          AND (? IS NULL OR trip_month = ?)
+        GROUP BY trip_month
+        ORDER BY trip_month
+        """
+
+    rows = await _duckdb_rows_async(parquet_query, [month, month])
+    counts: dict[str, int] = {}
+    for row in rows:
+        trip_month = row.get("trip_month") if isinstance(row, dict) else None
+        trip_count = row.get("trip_count") if isinstance(row, dict) else None
+        if trip_month is None or trip_count is None:
+            continue
+        counts[str(trip_month)] = _coerce_int(trip_count)
 
     return [
         {"trip_month": trip_month, "trip_count": count}
@@ -172,39 +274,67 @@ async def _monthly_trip_counts_from_parquet(month: str | None, parquet_query: st
     ]
 
 
+async def _monthly_trip_counts_from_db(month: str | None) -> list[dict[str, object]]:
+    async for session in get_session():
+        if month is None:
+            stmt = text(
+                """
+                SELECT trip_month, COUNT(*) AS trip_count
+                FROM citibike_trips
+                WHERE trip_month IS NOT NULL
+                GROUP BY trip_month
+                ORDER BY trip_month
+                """
+            )
+            result = await session.execute(stmt)
+        else:
+            stmt = text(
+                """
+                SELECT trip_month, COUNT(*) AS trip_count
+                FROM citibike_trips
+                WHERE trip_month = :month
+                GROUP BY trip_month
+                ORDER BY trip_month
+                """
+            )
+            result = await session.execute(stmt, {"month": month})
+        return [dict(row) for row in result.mappings().all()]
+    return []
+
+
+def _merge_monthly_trip_counts(
+    primary_rows: list[dict[str, object]],
+    secondary_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    merged: dict[str, int] = {}
+
+    for rows in (primary_rows, secondary_rows):
+        for row in rows:
+            trip_month = row.get("trip_month") if isinstance(row, dict) else None
+            trip_count = row.get("trip_count") if isinstance(row, dict) else None
+            if trip_month is None or trip_count is None:
+                continue
+            month_key = str(trip_month)
+            if month_key not in merged:
+                merged[month_key] = _coerce_int(trip_count)
+
+    return [
+        {"trip_month": trip_month, "trip_count": trip_count}
+        for trip_month, trip_count in sorted(merged.items())
+    ]
+
+
 def _parquet_trip_month_expr_sql() -> str:
-    # Derive the month from the raw parquet timestamp column, then fall back to the
-    # month embedded in the filename.
-    return (
-        "COALESCE("
-        "strftime(TRY_CAST(\"Start Time\" AS TIMESTAMP), '%Y%m'), "
-        "NULLIF(regexp_extract(filename, 'data(\\\\d{6})\\\\.parquet$', 1), '')"
-        ")"
-    )
+    # Use the month encoded in the parquet filename so the query works across
+    # both raw and normalized parquet schemas.
+    return "NULLIF(regexp_extract(filename, 'data(\\d{6})\\.parquet$', 1), '')"
 
 
-def _parquet_trips_cte_sql() -> str:
-    # Project raw parquet columns into a DB-like schema so analytics SQL is source-compatible.
-    trip_month_expr = _parquet_trip_month_expr_sql()
-    return f"""
-        SELECT
-            CAST(ride_id AS VARCHAR) AS ride_id,
-            CAST(rideable_type AS VARCHAR) AS rideable_type,
-            TRY_CAST("Start Time" AS TIMESTAMP) AS started_at,
-            TRY_CAST("End Time" AS TIMESTAMP) AS ended_at,
-            CAST("Start Station Name" AS VARCHAR) AS start_station_name,
-            CAST("Start Station ID" AS VARCHAR) AS start_station_id,
-            CAST("End Station Name" AS VARCHAR) AS end_station_name,
-            CAST("End Station ID" AS VARCHAR) AS end_station_id,
-            TRY_CAST("Start Station Latitude" AS DOUBLE) AS start_lat,
-            TRY_CAST("Start Station Longitude" AS DOUBLE) AS start_lng,
-            TRY_CAST("End Station Latitude" AS DOUBLE) AS end_lat,
-            TRY_CAST("End Station Longitude" AS DOUBLE) AS end_lng,
-            LOWER(CAST("Member/Casual" AS VARCHAR)) AS member_casual,
-            {trip_month_expr} AS trip_month,
-            CURRENT_TIMESTAMP::TIMESTAMP AS created_at
-        FROM read_parquet(?, union_by_name=true, filename=true)
-    """
+def _parquet_trips_cte_sql(parquet_files: list[str]) -> str:
+    # Project the parquet files into a DB-like schema using only columns that exist anywhere in the set.
+    columns = _parquet_columns_for_files(tuple(parquet_files))
+    parquet_files_sql = _parquet_file_list_sql(parquet_files)
+    return _parquet_trip_projection_sql(columns, parquet_files_sql)
 
 
 async def _query_rows(
@@ -551,57 +681,26 @@ async def analytics_monthly_trip_counts(
     month: str | None = Query(None, min_length=6, max_length=6),
 ):
     try:
-        db_query = """
-            SELECT trip_month, COUNT(*) AS trip_count
-            FROM citibike_trips
-            WHERE trip_month IS NOT NULL
-            GROUP BY trip_month
-            ORDER BY trip_month
-            """
-        db_params: dict[str, object] = {}
-        if month is not None:
-            db_query = """
-                SELECT trip_month, COUNT(*) AS trip_count
-                FROM citibike_trips
-                WHERE trip_month = :month
-                GROUP BY trip_month
-                ORDER BY trip_month
-                """
-            db_params = {"month": month}
-
-        parquet_month_expr = _parquet_trip_month_expr_sql()
-        parquet_query = f"""
-            SELECT trip_month, COUNT(*) AS trip_count
-            FROM (
-                SELECT {parquet_month_expr} AS trip_month
-                FROM read_parquet(?, union_by_name=true, filename=true)
-            ) AS monthly
-            WHERE trip_month IS NOT NULL
-              AND (? IS NULL OR trip_month = ?)
-            GROUP BY trip_month
-            ORDER BY trip_month
-            """
-
         rows: list[dict[str, object]] = []
-
-        async def _fetch_db_rows() -> list[dict[str, object]]:
-            async for session in get_session():
-                result = await session.execute(text(db_query), db_params)
-                return [dict(row) for row in result.mappings().all()]
-            return []
 
         try:
             if _is_parquet_source():
-                rows = await _monthly_trip_counts_from_parquet(month, parquet_query)
+                primary_rows = await _monthly_trip_counts_from_parquet(month)
+                secondary_rows = await _monthly_trip_counts_from_db(month)
             else:
-                rows = await _fetch_db_rows()
+                primary_rows = await _monthly_trip_counts_from_db(month)
+                secondary_rows = await _monthly_trip_counts_from_parquet(month)
+            rows = _merge_monthly_trip_counts(primary_rows, secondary_rows)
         except Exception:
             logger.exception("Monthly trip counts query failed for primary source")
             try:
                 if _is_parquet_source():
-                    rows = await _fetch_db_rows()
+                    primary_rows = await _monthly_trip_counts_from_db(month)
+                    secondary_rows = await _monthly_trip_counts_from_parquet(month)
                 else:
-                    rows = await _monthly_trip_counts_from_parquet(month, parquet_query)
+                    primary_rows = await _monthly_trip_counts_from_parquet(month)
+                    secondary_rows = await _monthly_trip_counts_from_db(month)
+                rows = _merge_monthly_trip_counts(primary_rows, secondary_rows)
             except Exception:
                 logger.exception("Monthly trip counts query failed for fallback source")
                 return []
@@ -629,31 +728,32 @@ async def analytics_lost_bike_fee_summary(
     month: str = Query(..., min_length=6, max_length=6),
     rider: str = Query("all", pattern="^(all|member|casual)$"),
 ):
-    parquet_trips_cte = _parquet_trips_cte_sql()
-    parquet_query = f"""
-        WITH trips AS (
-            {parquet_trips_cte}
-        ),
-         durations AS (
-             SELECT
-                 trip_month,
-                 LOWER(member_casual) AS member_casual,
-                 GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
-             FROM trips
-             WHERE ended_at IS NOT NULL
-               AND started_at IS NOT NULL
-               AND trip_month = ?
-               AND (? = 'all' OR LOWER(member_casual) = ?)
-         )
-        SELECT
-            trip_month,
-            member_casual,
-            SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) AS lost_bike_fee_trips,
-            COUNT(*) AS total_trips
-        FROM durations
-        GROUP BY trip_month, member_casual
-        ORDER BY member_casual
-        """
+    def _parquet_query(parquet_files: list[str]) -> str:
+        parquet_trips_cte = _parquet_trips_cte_sql(parquet_files)
+        return f"""
+            WITH trips AS (
+                {parquet_trips_cte}
+            ),
+             durations AS (
+                 SELECT
+                     trip_month,
+                     LOWER(member_casual) AS member_casual,
+                     GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
+                 FROM trips
+                 WHERE ended_at IS NOT NULL
+                   AND started_at IS NOT NULL
+                   AND trip_month = ?
+                   AND (? = 'all' OR LOWER(member_casual) = ?)
+             )
+            SELECT
+                trip_month,
+                member_casual,
+                SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) AS lost_bike_fee_trips,
+                COUNT(*) AS total_trips
+            FROM durations
+            GROUP BY trip_month, member_casual
+            ORDER BY member_casual
+            """
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
         t = inspect(CitiBikeTrip).c
@@ -692,7 +792,8 @@ async def analytics_lost_bike_fee_summary(
     rows: list[dict[str, object]] = []
     try:
         if _is_parquet_source():
-            rows = await _duckdb_rows_async(parquet_query, [_parquet_files_for_month(month), month, rider, rider])
+            parquet_files = _parquet_files_for_month(month)
+            rows = await _duckdb_rows_async(_parquet_query(parquet_files), [month, rider, rider])
         else:
             rows = await _fetch_db_rows()
     except Exception:
@@ -701,7 +802,8 @@ async def analytics_lost_bike_fee_summary(
             if _is_parquet_source():
                 rows = await _fetch_db_rows()
             else:
-                rows = await _duckdb_rows_async(parquet_query, [_parquet_files_for_month(month), month, rider, rider])
+                parquet_files = _parquet_files_for_month(month)
+                rows = await _duckdb_rows_async(_parquet_query(parquet_files), [month, rider, rider])
         except Exception:
             logger.exception("Lost bike fee summary query failed for fallback source")
             rows = []
@@ -721,51 +823,52 @@ async def analytics_lost_bike_fee_summary(
 async def analytics_duration_buckets(
     month: str = Query(..., min_length=6, max_length=6),
     rider: str = Query("all", pattern="^(all|member|casual)$"),
-    bucket_minutes: int = Query(5, ge=1, le=60),
+    bucket_minutes: int = Query(5, ge=1, le=1400),
 ):
-    parquet_trips_cte = _parquet_trips_cte_sql()
-    parquet_query = f"""
-        WITH trips AS (
-            {parquet_trips_cte}
-        ),
-         durations AS (
-             SELECT
-                 trip_month,
-                 LOWER(member_casual) AS member_casual,
-                 GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
-             FROM trips
-             WHERE ended_at IS NOT NULL
-               AND started_at IS NOT NULL
-               AND trip_month = ?
-               AND (? = 'all' OR LOWER(member_casual) = ?)
-         ), bucketed AS (
+    def _parquet_query(parquet_files: list[str]) -> str:
+        parquet_trips_cte = _parquet_trips_cte_sql(parquet_files)
+        return f"""
+            WITH trips AS (
+                {parquet_trips_cte}
+            ),
+             durations AS (
+                 SELECT
+                     trip_month,
+                     LOWER(member_casual) AS member_casual,
+                     GREATEST(0, CAST(FLOOR(date_diff('second', started_at, ended_at) / 60.0) AS INTEGER)) AS duration_min
+                 FROM trips
+                 WHERE ended_at IS NOT NULL
+                   AND started_at IS NOT NULL
+                   AND trip_month = ?
+                   AND (? = 'all' OR LOWER(member_casual) = ?)
+             ), bucketed AS (
+                SELECT
+                    d.trip_month,
+                    d.member_casual,
+                    d.duration_min,
+                    CASE
+                        WHEN d.duration_min > 1440 THEN 'LOST_BIKE_FEE'
+                        ELSE
+                            LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? AS INTEGER) AS VARCHAR), 4, '0')
+                            || '-'
+                            || LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? + ? - 1 AS INTEGER) AS VARCHAR), 4, '0')
+                            || ' min'
+                    END AS duration_bucket
+                FROM durations d
+            )
             SELECT
-                d.trip_month,
-                d.member_casual,
-                d.duration_min,
-                CASE
-                    WHEN d.duration_min > 1440 THEN 'LOST_BIKE_FEE'
-                    ELSE
-                        LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? AS INTEGER) AS VARCHAR), 4, '0')
-                        || '-'
-                        || LPAD(CAST(CAST(FLOOR(d.duration_min::DOUBLE / ?) * ? + ? - 1 AS INTEGER) AS VARCHAR), 4, '0')
-                        || ' min'
-                END AS duration_bucket
-            FROM durations d
-        )
-        SELECT
-            trip_month,
-            member_casual,
-            duration_bucket,
-            COUNT(*) AS trips,
-            (SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) > 0) AS lost_bike_fee_flag
-        FROM bucketed
-        GROUP BY trip_month, member_casual, duration_bucket
-        ORDER BY
-            member_casual,
-            CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
-            duration_bucket
-        """
+                trip_month,
+                member_casual,
+                duration_bucket,
+                COUNT(*) AS trips,
+                (SUM(CASE WHEN duration_min > 1440 THEN 1 ELSE 0 END) > 0) AS lost_bike_fee_flag
+            FROM bucketed
+            GROUP BY trip_month, member_casual, duration_bucket
+            ORDER BY
+                member_casual,
+                CASE WHEN duration_bucket = 'LOST_BIKE_FEE' THEN 1 ELSE 0 END,
+                duration_bucket
+            """
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
         t = inspect(CitiBikeTrip).c
@@ -832,10 +935,10 @@ async def analytics_duration_buckets(
     rows: list[dict[str, object]] = []
     try:
         if _is_parquet_source():
+            parquet_files = _parquet_files_for_month(month)
             rows = await _duckdb_rows_async(
-                parquet_query,
+                _parquet_query(parquet_files),
                 [
-                    _parquet_files_for_month(month),
                     month,
                     rider,
                     rider,
@@ -854,10 +957,10 @@ async def analytics_duration_buckets(
             if _is_parquet_source():
                 rows = await _fetch_db_rows()
             else:
+                parquet_files = _parquet_files_for_month(month)
                 rows = await _duckdb_rows_async(
-                    parquet_query,
+                    _parquet_query(parquet_files),
                     [
-                        _parquet_files_for_month(month),
                         month,
                         rider,
                         rider,
@@ -890,30 +993,31 @@ async def analytics_dashboard_summary(
     rider: str = Query("all", pattern="^(all|member|casual)$"),
     top_n: int = Query(10, ge=1, le=50),
 ):
-    parquet_trips_cte = _parquet_trips_cte_sql()
-    parquet_query = f"""
-        WITH trips AS (
-            {parquet_trips_cte}
-        )
-         SELECT
-             rideable_type,
-             LOWER(member_casual) AS member_casual,
-             started_at,
-             ended_at,
-             start_station_name,
-             start_station_id,
-             end_station_name,
-             end_station_id,
-             start_lat,
-             start_lng,
-             end_lat,
-             end_lng
-         FROM trips
-         WHERE trip_month = ?
-           AND started_at IS NOT NULL
-           AND ended_at IS NOT NULL
-           AND (? = 'all' OR LOWER(member_casual) = ?)
-         """
+    def _parquet_query(parquet_files: list[str]) -> str:
+        parquet_trips_cte = _parquet_trips_cte_sql(parquet_files)
+        return f"""
+            WITH trips AS (
+                {parquet_trips_cte}
+            )
+             SELECT
+                 rideable_type,
+                 LOWER(member_casual) AS member_casual,
+                 started_at,
+                 ended_at,
+                 start_station_name,
+                 start_station_id,
+                 end_station_name,
+                 end_station_id,
+                 start_lat,
+                 start_lng,
+                 end_lat,
+                 end_lng
+             FROM trips
+             WHERE trip_month = ?
+               AND started_at IS NOT NULL
+               AND ended_at IS NOT NULL
+               AND (? = 'all' OR LOWER(member_casual) = ?)
+             """
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
         t = inspect(CitiBikeTrip).c
@@ -951,7 +1055,8 @@ async def analytics_dashboard_summary(
     rows: list[dict[str, object]] = []
     try:
         if _is_parquet_source():
-            rows = await _duckdb_rows_async(parquet_query, [_parquet_files_for_month(month), month, rider, rider])
+            parquet_files = _parquet_files_for_month(month)
+            rows = await _duckdb_rows_async(_parquet_query(parquet_files), [month, rider, rider])
         else:
             rows = await _fetch_db_rows()
     except Exception:
@@ -960,7 +1065,8 @@ async def analytics_dashboard_summary(
             if _is_parquet_source():
                 rows = await _fetch_db_rows()
             else:
-                rows = await _duckdb_rows_async(parquet_query, [_parquet_files_for_month(month), month, rider, rider])
+                parquet_files = _parquet_files_for_month(month)
+                rows = await _duckdb_rows_async(_parquet_query(parquet_files), [month, rider, rider])
         except Exception:
             logger.exception("Dashboard summary query failed for fallback source")
             rows = []
