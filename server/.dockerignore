@@ -42,3 +42,9 @@ venv
 **/values.dev.yaml
 LICENSE
 README.md
+
+# Large local data should be bind-mounted at runtime, not copied into image layers.
+scratch/data
+**/*.parquet
+**/*.csv
+**/*.zip

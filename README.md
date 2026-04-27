@@ -6,18 +6,12 @@
 
 **Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel) → PostgreSQL database → React frontend (Vite + Node.js) (ascii visualization at bottom)
 
-**Automation**: Digital Ocean server runs scheduled Python script for monthly data ingestion.
+**Automation**: GitHub Actions deploys Docker Compose services to the DigitalOcean server; monthly data seeding runs from the backend app scheduler.
 
-**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). App service scheduled and running on backing server.
-
-## **Timeline**
-
-- GH workflow for DO CICD for main — debug
-- refine frontend — 3-20
-- domain, configure dns — 3-22
-- Benchmarking for site / https — 3-25
+**Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). Production runtime is managed by Docker Compose invocations from CI/CD.
 
 ## **Data Pipeline**
+
 ### **Ingestion**
 
 Fetches monthly data from S3:
@@ -87,7 +81,7 @@ PostgreSQL 18 database is being used to hold all the data.
 
 ## **API**
 
-FastAPI with Uvicorn ASGI server for concurrent connections following RESTful architecture. 
+FastAPI with Uvicorn ASGI server for concurrent connections following RESTful architecture.
 
 **Sample endpoints**:
 
@@ -98,7 +92,7 @@ FastAPI with Uvicorn ASGI server for concurrent connections following RESTful ar
 
 ## **Frontend**
 
-React + Vite stack with data visualization components. 
+React + Vite stack with data visualization components.
 
 ## **Middleware**
 
@@ -111,8 +105,7 @@ React + Vite stack with data visualization components.
 - Python 3.13+
 - PostgreSQL 14+
 - Node.js 18+ (frontend)
-- 
-First clone the repo and move to the root dir, then follow the below steps.
+- First clone the repo and move to the root dir, then follow the below steps.
 
 1. Create and activate a virtual environment using venv (optional but recommended):
 

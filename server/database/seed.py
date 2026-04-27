@@ -1,14 +1,17 @@
 import argparse
+import csv
+import io
 import logging
 import os
 import re
 import tempfile
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import SQLModel, Session, create_engine
 
 try:
@@ -17,7 +20,6 @@ try:
 except ImportError:
     from server.database.ingest import main as ingest_main
     from server.database.models import CitiBikeTrip
-
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,26 @@ MONTH_COLUMNS = [
     "member_casual",
 ]
 
+COPY_INSERT_COLUMNS = MONTH_COLUMNS + ["trip_month", "created_at"]
+NEW_YORK_TZ = ZoneInfo("America/New_York")
+TEMP_SEED_TABLE = "tmp_citibike_seed"
+
+
+def _copy_insert_sql() -> str:
+	columns = ", ".join(COPY_INSERT_COLUMNS)
+	return (
+		f"COPY {TEMP_SEED_TABLE} ({columns}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
+	)
+
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    root_logger = logging.getLogger()
+    # Only configure if no handlers are already attached
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        )
 
 
 def _sync_db_url(db_url: str) -> str:
@@ -136,17 +152,32 @@ def _month_exists_in_db(session: Session, month_value: str) -> bool:
 	result = session.connection().exec_driver_sql(query, (month_value,))
 	return result.scalar() is not None
 
+
+def _month_row_count_in_db(session: Session, month_value: str) -> int:
+	"""Return row count for a given month in citibike_trips."""
+	query = "SELECT COUNT(*) FROM citibike_trips WHERE trip_month = %s"
+	result = session.connection().exec_driver_sql(query, (month_value,))
+	count = result.scalar()
+	return int(count) if count is not None else 0
+
 def _months_missing_in_db(session: Session, target_months: List[str]) -> List[str]:
 	"""Check which target months are not yet loaded in the database."""
 	missing: List[str] = []
+	present_months: List[str] = []
 	
 	for month_value in target_months:
-		# If month not found, add to missing list
 		if not _month_exists_in_db(session, month_value):
 			logger.debug("Month %s not found in database", month_value)
 			missing.append(month_value)
 		else:
-			logger.debug("Month %s already in database", month_value)
+			logger.debug("Month %s already present in database", month_value)
+			present_months.append(month_value)
+
+	if present_months:
+		logger.info(
+			"Months already present in DB: %s",
+			", ".join(present_months),
+		)
 	
 	return missing
 
@@ -249,22 +280,16 @@ def _find_month_files(data_dir: Path, target_month: str | None, target_range: st
 
 def _prepare_df(df: pd.DataFrame, trip_month: str) -> pd.DataFrame:
 	"""Prepare and clean Citi Bike trip dataframe for insertion."""
-	prepared = df.copy()
-
-	# Ensure all expected columns exist
-	for column in MONTH_COLUMNS:
-		if column not in prepared.columns:
-			logger.debug("Adding missing column: %s", column)
-			prepared[column] = None
-
-	# Keep only the columns we need
-	prepared = prepared[MONTH_COLUMNS]
+	# Keep only the columns we need (select upfront to reduce memory)
+	missing_cols = [col for col in MONTH_COLUMNS if col not in df.columns]
+	if missing_cols:
+		for col in missing_cols:
+			logger.debug("Adding missing column: %s", col)
+			df[col] = None
 	
-	# Convert timestamp strings to datetime objects
-	prepared["started_at"] = pd.to_datetime(prepared["started_at"], errors="coerce")
-	prepared["ended_at"] = pd.to_datetime(prepared["ended_at"], errors="coerce")
+	prepared = df[MONTH_COLUMNS].copy()
 	
-	# Drop rows with missing required fields
+	# Drop rows with missing required fields BEFORE timestamp conversion (faster)
 	required_columns = ["ride_id", "rideable_type", "started_at", "ended_at", "member_casual"]
 	rows_before = len(prepared)
 	prepared = prepared.dropna(subset=required_columns)
@@ -272,61 +297,139 @@ def _prepare_df(df: pd.DataFrame, trip_month: str) -> pd.DataFrame:
 	
 	if rows_removed > 0:
 		logger.debug("Removed %d rows with missing required fields", rows_removed)
-
+	
+	# Convert timestamp strings to datetime objects (only non-null rows now)
+	prepared["started_at"] = pd.to_datetime(prepared["started_at"], errors="coerce", utc=False)
+	prepared["ended_at"] = pd.to_datetime(prepared["ended_at"], errors="coerce", utc=False)
+	
 	# Add the trip month for reference
 	prepared["trip_month"] = trip_month
+	# Ensure COPY provides a value for created_at across schemas with/without server defaults.
+	prepared["created_at"] = datetime.now(NEW_YORK_TZ).replace(tzinfo=None, microsecond=0)
 	
 	logger.debug("Prepared dataframe: %d rows, %d columns", len(prepared), len(prepared.columns))
 	return prepared
 
 
-def _normalize_nulls(record: dict) -> dict:
-    normalized = {}
-    for key, value in record.items():
-        if pd.isna(value):
-            normalized[key] = None
-        else:
-            normalized[key] = value
-    return normalized
+def _insert_batch(session: Session, prepared: pd.DataFrame) -> int:
+	"""Insert a batch of prepared rows directly into the database with conflict handling."""
+	if prepared.empty:
+		return 0
+
+	batch_size = len(prepared)
+	try:
+		buffer = io.StringIO()
+		prepared[COPY_INSERT_COLUMNS].to_csv(
+			buffer,
+			index=False,
+			header=False,
+			na_rep="\\N",
+			quoting=csv.QUOTE_MINIMAL,
+			date_format="%Y-%m-%d %H:%M:%S.%f",
+		)
+		buffer.seek(0)
+
+		sql_connection = session.connection()
+		dbapi_connection = sql_connection.connection
+		cursor = dbapi_connection.cursor()
+		cursor.execute(
+			f"""
+			CREATE TEMP TABLE IF NOT EXISTS {TEMP_SEED_TABLE} (
+				LIKE citibike_trips INCLUDING DEFAULTS INCLUDING GENERATED
+				EXCLUDING CONSTRAINTS EXCLUDING INDEXES
+			)
+			"""
+		)
+		cursor.execute(f"TRUNCATE {TEMP_SEED_TABLE}")
+		cursor.copy_expert(_copy_insert_sql(), buffer)
+		cursor.execute(
+			f"""
+			INSERT INTO citibike_trips ({", ".join(COPY_INSERT_COLUMNS)})
+			SELECT {", ".join(COPY_INSERT_COLUMNS)}
+			FROM {TEMP_SEED_TABLE}
+			ON CONFLICT (ride_id) DO NOTHING
+			"""
+		)
+		result = cursor.rowcount if cursor.rowcount else 0
+		session.commit()
+		return result
+	except Exception as e:
+		session.rollback()
+		logger.error("Failed to insert batch of %d records: %s", batch_size, e)
+		raise
 
 
-def _chunked(records: List[dict], size: int) -> Iterable[List[dict]]:
-    for i in range(0, len(records), size):
-        yield records[i : i + size]
-
-
-def seed_month_file(session: Session, parquet_file: Path, batch_size: int = 5000) -> Tuple[int, int]:
+def seed_month_file(session: Session, parquet_file: Path, batch_size: int = 100_000) -> Tuple[int, int]:
 	"""Load data from a parquet file into the database, returning (total_rows, rows_inserted)."""
 	trip_month = _month_from_file_name(parquet_file)
 	logger.info("Seeding %s", parquet_file.name)
+	if parquet_file.exists():
+		logger.info("Parquet size for %s: %.2f MB", parquet_file.name, parquet_file.stat().st_size / (1024 * 1024))
 
 	# Load and prepare data
-	df = pd.read_parquet(parquet_file)
-	prepared = _prepare_df(df, trip_month)
-	records = [_normalize_nulls(row) for row in prepared.to_dict(orient="records")]
+	parquet_started = time.perf_counter()
+	logger.info("Reading parquet for %s", parquet_file.name)
+	df = pd.read_parquet(parquet_file, columns=MONTH_COLUMNS)
+	logger.info(
+		"Read parquet for %s in %.2fs (rows=%d)",
+		parquet_file.name,
+		time.perf_counter() - parquet_started,
+		len(df),
+	)
 
-	if not records:
+	prepare_started = time.perf_counter()
+	logger.info("Preparing dataframe for %s", parquet_file.name)
+	prepared = _prepare_df(df, trip_month)
+	logger.info(
+		"Prepared dataframe for %s in %.2fs (rows=%d)",
+		parquet_file.name,
+		time.perf_counter() - prepare_started,
+		len(prepared),
+	)
+
+	if prepared.empty:
 		logger.info("No valid rows found for %s", parquet_file.name)
 		return 0, 0
 
-	# Insert in batches
-	inserted = 0
-	for batch_num, chunk in enumerate(_chunked(records, batch_size)):
-		# Build insert statement with conflict handling
-		stmt = pg_insert(CitiBikeTrip).values(chunk)
-		stmt = stmt.on_conflict_do_nothing(index_elements=["ride_id"])
-		
-		# Execute batch insert
-		result = session.exec(stmt)
-		session.commit()
-		
-		batch_inserted = result.rowcount if result.rowcount else 0
-		if batch_inserted > 0:
-			inserted += int(batch_inserted)
-			logger.debug("Batch %d: inserted %d rows", batch_num + 1, batch_inserted)
+	if batch_size <= 0:
+		raise ValueError("batch_size must be greater than 0")
 
-	logger.info("Completed %s: total rows=%d, inserted=%d", parquet_file.name, len(records), inserted)
-	return len(records), inserted
+	total_rows = len(prepared)
+	total_inserted = 0
+	total_batches = ((total_rows - 1) // batch_size) + 1
+
+	for start in range(0, total_rows, batch_size):
+		stop = min(start + batch_size, total_rows)
+		batch = prepared.iloc[start:stop]
+		batch_number = (start // batch_size) + 1
+		batch_started = time.perf_counter()
+		logger.info(
+			"Inserting batch %d/%d for %s (rows %d-%d)",
+			batch_number,
+			total_batches,
+			parquet_file.name,
+			start + 1,
+			stop,
+		)
+		inserted = _insert_batch(session, batch)
+		total_inserted += inserted
+		logger.info(
+			"Inserted batch %d/%d for %s in %.2fs (inserted=%d)",
+			batch_number,
+			total_batches,
+			parquet_file.name,
+			time.perf_counter() - batch_started,
+			inserted,
+		)
+
+	logger.info(
+		"Completed %s: total rows=%d, inserted=%d batches=%d",
+		parquet_file.name,
+		total_rows,
+		total_inserted,
+		total_batches,
+	)
+	return total_rows, total_inserted
 
 
 def _remove_parquet_file(parquet_file: Path) -> None:
@@ -338,24 +441,44 @@ def _remove_parquet_file(parquet_file: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    default_data_dir = Path(__file__).resolve().parent.parent / "scratch" / "data"
-    env_data_dir = os.getenv("SEED_DATA_DIR")
-    if env_data_dir:
-        default_data_dir = Path(env_data_dir)
+	default_data_dir = Path(__file__).resolve().parent.parent / "scratch" / "data"
+	env_data_dir = os.getenv("SEED_DATA_DIR")
+	if env_data_dir:
+		default_data_dir = Path(env_data_dir)
 
-    parser = argparse.ArgumentParser(
-        description="Seed PostgreSQL from Citi Bike monthly parquet files using SQLModel schema."
-    )
-    parser.add_argument("--month", help="Specific month to seed in YYYYMM format.")
-    parser.add_argument("--range", dest="month_range", help="Inclusive range in format YYYYMM..YYYYMM. Overrides --month.")
-    parser.add_argument("--data-dir", default=str(default_data_dir), help="Directory containing dataYYYYMM.parquet files.")
-    parser.add_argument("--db-url", default=os.getenv("DB_URL"), help="Database URL. Defaults to DB_URL env var.")
-    parser.add_argument(
-        "--ingest-if-missing",
-        action="store_true",
-        help="Run ingest to fetch recent month parquet files when none are found.",
-    )
-    return parser.parse_args()
+	parser = argparse.ArgumentParser(
+		description="Seed PostgreSQL from Citi Bike monthly parquet files using SQLModel schema."
+	)
+	parser.add_argument("--month", help="Specific month to seed in YYYYMM format.")
+	parser.add_argument(
+		"--range",
+		dest="month_range",
+		help="Inclusive range in format YYYYMM..YYYYMM. Overrides --month.",
+	)
+	parser.add_argument(
+		"--data-dir",
+		default=str(default_data_dir),
+		help="Directory containing dataYYYYMM.parquet files.",
+	)
+	parser.add_argument(
+		"--db-url",
+		default=os.getenv("DB_URL"),
+		help="Database URL. Defaults to DB_URL env var.",
+	)
+	parser.add_argument(
+		"--ingest-if-missing",
+		action="store_true",
+		help="Run ingest to fetch recent month parquet files when none are found.",
+	)
+	parser.add_argument(
+		"--backfill-missing-rows",
+		action="store_true",
+		help=(
+			"Attempt to backfill missing rows for target months even when rows already exist in DB. "
+			"Useful for partially seeded months."
+		),
+	)
+	return parser.parse_args()
 
 
 def run_seed(
@@ -364,14 +487,26 @@ def run_seed(
     month: str | None = None,
     month_range: str | None = None,
     ingest_if_missing: bool = False,
+	backfill_missing_rows: bool = False,
+	force_clear_lock: bool = False,
 ) -> Tuple[int, int, int]:
 	"""
 	Seed the database with Citi Bike trip data.
+	
+	Args:
+		db_url: Database connection URL
+		data_dir: Directory containing parquet files
+		month: Specific month to seed (YYYYMM format)
+		month_range: Range of months to seed (YYYYMM..YYYYMM format)
+		ingest_if_missing: Fetch missing month files via ingest if not found locally
+		backfill_missing_rows: Re-seed target months to attempt filling missing rows
+		force_clear_lock: Force-clear any lingering advisory locks (for startup recovery)
 	
 	Returns: (files_processed, total_rows, rows_inserted)
 	"""
 	if not db_url:
 		raise RuntimeError("DB URL is required.")
+	
 
 	# Prepare data directory
 	resolved_data_dir = Path(data_dir)
@@ -392,6 +527,16 @@ def run_seed(
 	engine = create_engine(sync_url)
 
 	with Session(engine) as session:
+		# Force-clear any lingering advisory locks if requested (handles crashed seed operations)
+		if force_clear_lock:
+			try:
+				session.connection().exec_driver_sql(
+					"SELECT pg_advisory_unlock_all()"
+				)
+				logger.debug("Cleared any lingering advisory locks from previous operations")
+			except Exception as e:
+				logger.warning("Failed to clear lingering advisory locks: %s", e)
+
 		# Attempt to acquire advisory lock for this seeding operation
 		lock_result = session.connection().exec_driver_sql(
 			"SELECT pg_try_advisory_lock(%s)",
@@ -409,9 +554,29 @@ def run_seed(
 		# Determine which months to seed
 		requested_months = _resolve_target_months(month, month_range)
 		logger.debug("Requested months: %s", requested_months)
+
+		mode_parts = []
+		if ingest_if_missing:
+			mode_parts.append("download")
+		mode_parts.append("seed")
+		mode_str = "/".join(mode_parts)
+    
+		requested_months = _resolve_target_months(month, month_range)
+		logger.info(
+			"Starting %s mode for months: %s (ingest_if_missing=%s, backfill=%s)",
+			mode_str,
+			", ".join(requested_months),
+			ingest_if_missing,
+			backfill_missing_rows,
+		)
 		
-		# Check which months are not yet in the database
-		months_to_seed = _months_missing_in_db(session, requested_months)
+		# When backfilling, reseed target months and rely on ON CONFLICT(ride_id) DO NOTHING
+		# to only insert rows that are truly missing.
+		if backfill_missing_rows:
+			months_to_seed = requested_months
+		else:
+			# Default behavior: only seed months with no rows yet.
+			months_to_seed = _months_missing_in_db(session, requested_months)
 		
 		if not months_to_seed:
 			logger.info("Seed skipped: target month(s) already present in DB: %s", requested_months)
@@ -421,6 +586,22 @@ def run_seed(
 
 		# Resolve local month files and only ingest the specific missing months.
 		month_files, missing_local_months = _resolve_month_files_for_targets(resolved_data_dir, months_to_seed)
+
+		if backfill_missing_rows and ingest_if_missing:
+			logger.info(
+				"Backfill mode enabled; re-ingesting target months before seed: %s",
+				months_to_seed,
+			)
+			for target_month in months_to_seed:
+				try:
+					ingest_main(
+						output_dir=str(resolved_data_dir),
+						month=target_month,
+					)
+				except Exception:
+					logger.exception("Failed to refresh month %s during backfill", target_month)
+
+			month_files, missing_local_months = _resolve_month_files_for_targets(resolved_data_dir, months_to_seed)
 
 		if missing_local_months:
 			if not ingest_if_missing:
@@ -434,21 +615,32 @@ def run_seed(
 				missing_local_months,
 			)
 			for missing_month in missing_local_months:
-				ingest_main(
-					output_dir=str(resolved_data_dir),
-					month=missing_month,
-				)
+				try:
+					ingest_main(
+						output_dir=str(resolved_data_dir),
+						month=missing_month,
+					)
+				except Exception:
+					logger.exception("Failed to ingest missing month %s", missing_month)
 
 			month_files, missing_after_ingest = _resolve_month_files_for_targets(resolved_data_dir, months_to_seed)
 			if missing_after_ingest:
-				raise FileNotFoundError(
-					f"Month parquet files not found after ingest for: {', '.join(missing_after_ingest)}"
+				logger.warning(
+					"Skipping unavailable month parquet files after ingest attempt: %s",
+					", ".join(missing_after_ingest),
 				)
+				month_files = [
+					month_file
+					for month_file in month_files
+					if month_file.exists()
+				]
 
 		if not month_files:
-			raise FileNotFoundError(
-				f"No parquet files found in {resolved_data_dir}. Expected files like dataYYYYMM.parquet"
+			logger.warning(
+				"No parquet files available to seed in %s. Expected files like dataYYYYMM.parquet",
+				resolved_data_dir,
 			)
+			return 0, 0, 0
 
 		# Process each month file
 		total_rows = 0
@@ -456,9 +648,10 @@ def run_seed(
 		try:
 			for month_file in month_files:
 				trip_month = _month_from_file_name(month_file)
-				if _month_exists_in_db(session, trip_month):
+				month_has_rows = _month_exists_in_db(session, trip_month)
+				if month_has_rows and not backfill_missing_rows:
 					logger.info(
-						"Skipping %s because trip_month=%s is already present in DB",
+						"Skipping %s because trip_month=%s already has rows in DB",
 						month_file.name,
 						trip_month,
 					)
@@ -494,6 +687,8 @@ def main() -> None:
         month=args.month,
         month_range=args.month_range,
         ingest_if_missing=args.ingest_if_missing,
+		backfill_missing_rows=args.backfill_missing_rows,
+		force_clear_lock=True,  # CLI invocation should clear lingering locks
     )
 
 
