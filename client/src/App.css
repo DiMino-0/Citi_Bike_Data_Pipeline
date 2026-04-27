@@ -47,6 +47,32 @@
   background: #fff;
 }
 
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab:hover {
+  border-color: #94a3b8;
+}
+
+.tab-active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
 .kpis {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -83,6 +109,33 @@
   margin-top: 0.45rem;
 }
 
+.chart-grid {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.chart-grid-2up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chart-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  padding: 0.6rem;
+}
+
+.chart-card h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #334155;
+}
+
+.chart-wrapper {
+  margin-top: 0.65rem;
+  height: 320px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -107,6 +160,14 @@ th {
 @media (max-width: 820px) {
   .kpis {
     grid-template-columns: 1fr;
+  }
+
+  .chart-grid-2up {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-wrapper {
+    height: 280px;
   }
 
   table {

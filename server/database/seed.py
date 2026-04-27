@@ -21,7 +21,6 @@ except ImportError:
     from server.database.ingest import main as ingest_main
     from server.database.models import CitiBikeTrip
 
-
 logger = logging.getLogger(__name__)
 
 SEED_JOB_ADVISORY_LOCK_ID = 913004271
@@ -507,6 +506,7 @@ def run_seed(
 	"""
 	if not db_url:
 		raise RuntimeError("DB URL is required.")
+	
 
 	# Prepare data directory
 	resolved_data_dir = Path(data_dir)
@@ -554,6 +554,21 @@ def run_seed(
 		# Determine which months to seed
 		requested_months = _resolve_target_months(month, month_range)
 		logger.debug("Requested months: %s", requested_months)
+
+		mode_parts = []
+		if ingest_if_missing:
+			mode_parts.append("download")
+		mode_parts.append("seed")
+		mode_str = "/".join(mode_parts)
+    
+		requested_months = _resolve_target_months(month, month_range)
+		logger.info(
+			"Starting %s mode for months: %s (ingest_if_missing=%s, backfill=%s)",
+			mode_str,
+			", ".join(requested_months),
+			ingest_if_missing,
+			backfill_missing_rows,
+		)
 		
 		# When backfilling, reseed target months and rely on ON CONFLICT(ride_id) DO NOTHING
 		# to only insert rows that are truly missing.

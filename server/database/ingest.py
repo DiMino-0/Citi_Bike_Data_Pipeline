@@ -19,7 +19,61 @@ REQUEST_HEADERS = {
 }
 
 _YEAR_ARCHIVE_CACHE: Dict[str, Optional[bytes]] = {}
+_MONTH_FOLDER_NAMES = {
+	1: "1_January",
+	2: "2_February",
+	3: "3_March",
+	4: "4_April",
+	5: "5_May",
+	6: "6_June",
+	7: "7_July",
+	8: "8_August",
+	9: "9_September",
+	10: "10_October",
+	11: "11_November",
+	12: "12_December",
+}
 
+_LEGACY_SCHEMA_CUTOFF = 202101
+
+
+def _is_legacy_schema(year_month: str) -> bool:
+	return int(year_month) < _LEGACY_SCHEMA_CUTOFF
+
+
+def _normalize_legacy_trip_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+	"""Map pre-2021 Citi Bike columns into the modern schema used by the pipeline."""
+	rename_map = {
+		"tripduration": "tripduration",
+		"starttime": "started_at",
+		"stoptime": "ended_at",
+		"start station id": "start_station_id",
+		"start station name": "start_station_name",
+		"start station latitude": "start_lat",
+		"start station longitude": "start_lng",
+		"end station id": "end_station_id",
+		"end station name": "end_station_name",
+		"end station latitude": "end_lat",
+		"end station longitude": "end_lng",
+		"bikeid": "ride_id",
+		"usertype": "member_casual",
+	}
+
+	legacy_df = df.rename(columns=rename_map).copy()
+	legacy_df["rideable_type"] = "unknown"
+
+	if "member_casual" in legacy_df.columns:
+		legacy_df["member_casual"] = (
+			legacy_df["member_casual"]
+			.astype(str)
+			.str.strip()
+			.str.lower()
+			.replace({"subscriber": "member", "customer": "casual"})
+		)
+
+	# Drop columns that do not exist in the modern schema or are not needed downstream.
+	legacy_df = legacy_df.drop(columns=["tripduration", "birth year", "gender"], errors="ignore")
+	return legacy_df
 
 def _download_zip(url: str) -> bytes:
 	"""Download a zip file from URL and return as bytes."""
@@ -112,6 +166,15 @@ def _month_csv_prefix(year_month: str) -> str:
 	return f"{year_month}-citibike-tripdata"
 
 
+def _month_folder_name(year_month: str) -> str:
+	"""Return expected month folder name inside yearly archives for a given YYYYMM."""
+	month_number = int(year_month[4:6])
+	try:
+		return _MONTH_FOLDER_NAMES[month_number]
+	except KeyError as exc:
+		raise ValueError(f"Invalid month '{year_month}'. Expected YYYYMM format.") from exc
+	
+
 def _is_target_month_zip(path_name: str, year_month: str) -> bool:
 	"""Match monthly zip in yearly archive by exact basename.
 
@@ -169,7 +232,7 @@ def _read_month_parts_from_zip(
 	)
 
 	for csv_name in selected_files:
-		_read_csv_file(zf, csv_name, source_label, month_parts)
+		_read_csv_file(zf, csv_name, source_label, year_month, month_parts)
 
 
 def _read_month_parts_from_year_archive(year_month: str, month_parts: list[pd.DataFrame]) -> bool:
@@ -185,33 +248,77 @@ def _read_month_parts_from_year_archive(year_month: str, month_parts: list[pd.Da
 		with zipfile.ZipFile(io.BytesIO(year_archive_bytes)) as yearly_zip:
 			nested_zip_files = [name for name in yearly_zip.namelist() if name.lower().endswith('.zip')]
 
-			if not nested_zip_files:
-				logger.debug("Yearly archive has no nested zips; trying direct CSV files")
-				_read_month_parts_from_zip(yearly_zip, year_url, year_month, month_parts)
+			selected_nested = [name for name in nested_zip_files if _is_target_month_zip(name, year_month)]
+
+			if selected_nested:
+				selected_nested.sort()
+				
+				for nested_name in selected_nested:
+					nested_label = f"{year_url}!{nested_name}"
+					try:
+						with yearly_zip.open(nested_name) as nested_zip_file:
+							nested_zip_bytes = nested_zip_file.read()
+						with zipfile.ZipFile(io.BytesIO(nested_zip_bytes)) as monthly_zip:
+							_read_month_parts_from_zip(monthly_zip, nested_label, year_month, month_parts)
+					except zipfile.BadZipFile:
+						logger.exception("Nested month archive is not a valid zip: %s", nested_label)
+						continue
+				
 				return bool(month_parts)
 
-			selected_nested = [name for name in nested_zip_files if _is_target_month_zip(name, year_month)]
-			if not selected_nested:
+			if _read_month_parts_from_year_folder(yearly_zip, year_url, year_month, month_parts):
+				return True
+
+			if not nested_zip_files:
+				logger.debug("Yearly archive has no nested zips; trying direct CSV files")
+			else:
 				logger.debug("No nested month zip matched %s in yearly archive %s", year_month, year_url)
-				return False
 
-			selected_nested.sort()
-
-			for nested_name in selected_nested:
-				nested_label = f"{year_url}!{nested_name}"
-				try:
-					with yearly_zip.open(nested_name) as nested_zip_file:
-						nested_zip_bytes = nested_zip_file.read()
-					with zipfile.ZipFile(io.BytesIO(nested_zip_bytes)) as monthly_zip:
-						_read_month_parts_from_zip(monthly_zip, nested_label, year_month, month_parts)
-				except zipfile.BadZipFile:
-					logger.exception("Nested month archive is not a valid zip: %s", nested_label)
-					continue
-
+			_read_month_parts_from_zip(yearly_zip, year_url, year_month, month_parts)
+			return bool(month_parts)
+ 
 	except zipfile.BadZipFile:
 		logger.exception("Yearly archive is not a valid zip: %s", year_url)
 		return False
 
+	return bool(month_parts)
+
+
+def _read_month_parts_from_year_folder(
+	yearly_zip: zipfile.ZipFile,
+	year_url: str,
+	year_month: str,
+	month_parts: list[pd.DataFrame],
+) -> bool:
+	"""Read a month's data from yearly archive format containing month folders."""
+	folder_name = _month_folder_name(year_month)
+	folder_prefix = f"{year_month[:4]}-citibike-tripdata/{folder_name}/"
+	
+	csv_files = [
+		name
+		for name in yearly_zip.namelist()
+		if name.startswith(folder_prefix) and name.lower().endswith(".csv")
+	]
+	
+	if not csv_files:
+		logger.debug(
+			"No CSV files matched month folder %s in yearly archive %s",
+			folder_name,
+			year_url,
+		)
+		return False
+	
+	csv_files.sort()
+	logger.info(
+		"Reading %d CSV file(s) for %s from %s",
+		len(csv_files),
+		year_month,
+		folder_prefix.rstrip("/"),
+	)
+	
+	for csv_name in csv_files:
+		_read_csv_file(yearly_zip, csv_name, f"{year_url}!{csv_name}", year_month, month_parts)
+	
 	return bool(month_parts)
 
 
@@ -352,15 +459,23 @@ def _process_month(yearMonth: str, output_dir: Optional[str], dataframes: Dict[s
 		_save_to_parquet(output_dir, var_name, combined_df)
 
 
-def _read_csv_file(zf: zipfile.ZipFile, csv_name: str, url: str, month_parts: list) -> None:
+def _read_csv_file(zf: zipfile.ZipFile, csv_name: str, url: str, year_month: str, month_parts: list) -> None:
 	"""Read a single CSV file from the zip archive."""
 	with zf.open(csv_name) as csv_file:
 		try:
 			df = pd.read_csv(
 				TextIOWrapper(csv_file, encoding='utf-8', errors='replace'),
-				dtype={'end_station_id': 'str'},
+				dtype={
+					'start_station_id': 'str',
+					'end_station_id': 'str',
+					'start station id': 'str',
+					'end station id': 'str',
+					'bikeid': 'str',
+				},
 				low_memory=False,
 			)
+			if _is_legacy_schema(year_month):
+				df = _normalize_legacy_trip_dataframe(df)
 			month_parts.append(df)
 		except Exception as e:
 			logger.exception("Error reading CSV %s in %s: %s", csv_name, url, e)
@@ -373,6 +488,10 @@ def _save_to_parquet(output_dir: str, var_name: str, df: pd.DataFrame) -> None:
 	out_path = os.path.join(output_dir, f"{var_name}.parquet")
 	
 	try:
+		# Ensure station IDs are consistently string-like before fastparquet UTF-8 encoding.
+		for col in ("start_station_id", "end_station_id"):
+			if col in df.columns:
+				df[col] = df[col].map(lambda v: None if pd.isna(v) else str(v))
 		df.to_parquet(out_path)
 		logger.info("Wrote dataframe to %s", out_path)
 	except Exception:
