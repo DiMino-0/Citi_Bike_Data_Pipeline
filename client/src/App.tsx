@@ -915,8 +915,8 @@ function App() {
   return (
     <main className="dashboard">
       <header className="dashboard-header">
-        <h1>Citi Bike SQL Results</h1>
-        <p>Minimal dashboard backed by FastAPI analytics endpoints.</p>
+        <h1>Citi Bike Ride Data Dashboard</h1>
+        <p>Backed by FastAPI analytics endpoints.</p>
       </header>
 
       <section className="filters" aria-label="filters">
