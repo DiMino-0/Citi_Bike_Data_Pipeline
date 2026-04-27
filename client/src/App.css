@@ -88,7 +88,9 @@
 }
 
 .kpis h2,
-.panel h2 {
+.panel h2,
+.panel h3,
+.panel h4 {
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
@@ -171,7 +173,6 @@
 
 .chart-card h4 {
   margin: 0;
-  font-size: 0.86rem;
   color: #334155;
 }
 

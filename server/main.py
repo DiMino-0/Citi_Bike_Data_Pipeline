@@ -1001,7 +1001,7 @@ async def analytics_dashboard_summary(
             )
              SELECT
                  rideable_type,
-                 LOWER(member_casual) AS member_casual,
+                 member_casual,
                  started_at,
                  ended_at,
                  start_station_name,
@@ -1016,7 +1016,7 @@ async def analytics_dashboard_summary(
              WHERE trip_month = ?
                AND started_at IS NOT NULL
                AND ended_at IS NOT NULL
-               AND (? = 'all' OR LOWER(member_casual) = ?)
+                             AND (? = 'all' OR member_casual = ?)
              """
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
@@ -1025,7 +1025,7 @@ async def analytics_dashboard_summary(
         stmt = (
             select(
                 t.rideable_type.label("rideable_type"),
-                func.lower(t.member_casual).label("member_casual"),
+                t.member_casual.label("member_casual"),
                 t.started_at.label("started_at"),
                 t.ended_at.label("ended_at"),
                 t.start_station_name.label("start_station_name"),
@@ -1045,7 +1045,7 @@ async def analytics_dashboard_summary(
             .limit(max_dashboard_rows)
         )
         if rider != "all":
-            stmt = stmt.where(func.lower(t.member_casual) == rider)
+            stmt = stmt.where(t.member_casual == rider)
 
         async for session in get_session():
             result = await _execute_with_statement_timeout(session, stmt)
@@ -1088,7 +1088,7 @@ async def analytics_dashboard_summary(
     for row in rows:
         total_trips += 1
         rideable_type = str(row["rideable_type"] or "unknown")
-        member_casual = str(row["member_casual"] or "unknown")
+        member_casual = str(row["member_casual"] or "unknown").lower()
 
         histogram_by_bike[rideable_type] += 1
         histogram_by_rider[member_casual] += 1

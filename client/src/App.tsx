@@ -1105,7 +1105,7 @@ function App() {
           </section>
 
           <section className="panel" aria-label="computed elements">
-            <h2>Computed Elements</h2>
+            <h2>Ride Metrics</h2>
             {dashboardSummary ? (
               <>
                 <ul className="notes-list">
