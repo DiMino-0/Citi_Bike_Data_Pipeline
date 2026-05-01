@@ -526,6 +526,37 @@ def run_seed(
 	sync_url = _sync_db_url(db_url)
 	engine = create_engine(sync_url)
 
+	# If using DuckDB as the target database, avoid creating constraints/indexes
+	# because they can slow down bulk loads. Create a minimal table schema
+	# without UNIQUE/PK constraints or additional indexes instead of
+	# SQLModel.metadata.create_all(engine) which would add them.
+	is_duckdb = str(sync_url).startswith("duckdb://")
+	if is_duckdb:
+		# Create a lightweight table suitable for bulk COPY loads.
+		create_table_sql = (
+			"CREATE TABLE IF NOT EXISTS citibike_trips ("
+			"id BIGINT, "
+			"ride_id VARCHAR, "
+			"rideable_type VARCHAR, "
+			"started_at TIMESTAMP, "
+			"ended_at TIMESTAMP, "
+			"start_station_name VARCHAR, "
+			"start_station_id VARCHAR, "
+			"end_station_name VARCHAR, "
+			"end_station_id VARCHAR, "
+			"start_lat DOUBLE, "
+			"start_lng DOUBLE, "
+			"end_lat DOUBLE, "
+			"end_lng DOUBLE, "
+			"member_casual VARCHAR, "
+			"trip_month VARCHAR(6), "
+			"created_at TIMESTAMP"
+			")"
+		)
+		with engine.begin() as conn:
+			# Use exec_driver_sql for raw SQL compatibility across dialects
+			conn.exec_driver_sql(create_table_sql)
+
 	with Session(engine) as session:
 		# Force-clear any lingering advisory locks if requested (handles crashed seed operations)
 		if force_clear_lock:

@@ -2,11 +2,11 @@
 
 ## **Overview**
 
-**Purpose**: An end-to-end data pipeline that obtains and cleans monthly Citi Bike trip records, performs analysis on ridership patterns, station usage, and member behavior, and makes these results viewable on a web app automatically.
+**Purpose**: An end-to-end data pipeline that obtains and cleans monthly Citi Bike trip records, performs analysis on ridership patterns, station usage, and member behavior, and makes these results viewable on a web app automatically. Only for NY data.
 
 **Architecture**: Python backend (FastAPI + asyncpg driver + SQLModel) → PostgreSQL database → React frontend (Vite + Node.js) (ascii visualization at bottom)
 
-**Automation**: GitHub Actions deploys Docker Compose services to the DigitalOcean server; monthly data seeding runs from the backend app scheduler.
+**Automation**: GitHub Actions deploys Docker Compose services to the DigitalOcean server; monthly data seeding runs as a scheduled loop with FastAPI.
 
 **Project Status**: Hosting was obtained through Digital Ocean. A Postgres database and Ubuntu server were set up remotely with a firewall for dev machine. A FastAPI app running locally was connected to the db with some test routes. Frontend/Backend/DB Docker images created, and compose to define their connections. Nginx to serve static React files, and to act as a reverse proxy (forwards /api to backend). Production runtime is managed by Docker Compose invocations from CI/CD.
 
@@ -37,14 +37,14 @@ Derived Metrics:
 
 - Ride duration
   - Calculated as the difference between `ended_at` and `started_at`.
-- Optimal route + duration
+- Route + duration
   - Computed using start/end longitude and latitude.
-  - Routing logic is offloaded to the OSRM API.
+  - Routing logic is currently straight line calculation using haversine miles.
 - Station usage
   - Total trip count by station name and station ID.
   - Arrivals and departures tracked per station.
-- Actual vs optimal trip duration
-  - Compare rider behavior against estimated optimal duration.
+- Actual vs estimated trip duration
+  - Compare rider behavior against estimated duration.
   - Used to evaluate:
     - Whether members keep bikes longer than casual riders.
     - Whether electric or classic bikes are favored for longer rides.
@@ -55,15 +55,10 @@ Visualizations Made:
   - Number of station uses by:
     - Bike type (classic/electric)
     - Rider type (member/casual)
-- Scatter plots
+    - Duration buckets (member/casual)
+- Scatter plot
   - Trip duration vs time of day
     - Highlights dense usage windows for member/casual riders.
-  - Start longitude vs start latitude
-    - Shows density/spread of trip origins, colored by rider type and bike type.
-  - Start station vs end station (with ID jitter)
-    - Visualizes station-to-station flow.
-  - Start lng/lat vs end lng/lat
-    - Shows approximate rider trip distances.
 
 Conclusions to be Drawn:
 
@@ -74,7 +69,7 @@ Conclusions to be Drawn:
 
 ### **Storage**
 
-PostgreSQL 18 database is being used to hold all the data.
+PostgreSQL database is being used to hold the data on remote. Parquet mode uses local data store.
 
 - Avoiding duplicate code via SQLModel filling a dual role as ORM (SQLAlchemy) and API schema (Pydantic).
 - Async operations via `postgresql+asyncpg` driver with `asyncpg` for session management.
@@ -165,7 +160,7 @@ docker compose logs -f frontend backend db
 Quick API check:
 
 ```cmd
-curl http://localhost/api/db/health
+curl http://localhost:3000/api/db/health
 ```
 
 Stop stack:
