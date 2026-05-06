@@ -50,6 +50,14 @@ services:
         read_only: true
       # Persist fetched parquet files in the repository scratch/data directory.
       - ./server/scratch/data:/app/scratch/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 13g
+        reservations:
+          cpus: "4"
+          memory: 10gb
     networks:
       - app-network
 
@@ -65,6 +73,11 @@ services:
       - "3000:80"
     depends_on:
       - backend
+    deploy:
+      resources:
+        reservations:
+          cpus: "2"
+          memory: 1gb
     networks:
       - app-network
 

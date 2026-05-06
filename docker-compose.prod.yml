@@ -23,6 +23,18 @@ services:
     networks:
       - app-network
 
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
 volumes:
   citibike_daily_data:
 
@@ -32,4 +44,4 @@ secrets:
 
 networks:
   app-network:
-    external: true
+    driver: bridge
