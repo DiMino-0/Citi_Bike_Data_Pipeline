@@ -1084,7 +1084,7 @@ function App() {
 
       {activeTab === "visualizations" ? (
         <section className="panel" aria-label="visualizations made">
-          <h2>Visualizations Made</h2>
+          <h2>Visualizations Made: </h2>
           {dashboardSummary ? (
             <>
               <h3>Histograms</h3>

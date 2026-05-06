@@ -37,7 +37,8 @@ _flock = getattr(fcntl, "flock")
 
 
 def _query_source() -> str:
-    source = os.getenv("DEMO_SOURCE", os.getenv("DEMO_QUERY_SOURCE", "db")).strip().lower()
+    default_source = "parquet" if glob.glob(_parquet_glob()) else "db"
+    source = os.getenv("DEMO_SOURCE", os.getenv("DEMO_QUERY_SOURCE", default_source)).strip().lower()
     if source not in {"db", "parquet"}:
         logger.warning("Invalid DEMO_SOURCE=%r. Falling back to 'db'.", source)
         return "db"
@@ -139,7 +140,7 @@ def _duckdb_rows(query: str, params: list[object] | None = None) -> list[dict[st
     try:
         # Keep DuckDB from over-consuming memory in constrained containers.
         con.execute("PRAGMA threads=2")
-        con.execute("PRAGMA memory_limit='1GB'")
+        con.execute("PRAGMA memory_limit='7GB'")
         con.execute("PRAGMA temp_directory='/tmp'")
         executed = con.execute(query, params or [])
         columns = [column[0] for column in executed.description]
@@ -392,7 +393,8 @@ def _env_int(name: str, default: int) -> int:
 
 def _analytics_query_timeout_ms() -> int:
     # Keep analytics queries bounded to avoid upstream gateway timeouts.
-    return max(1000, _env_int("ANALYTICS_QUERY_TIMEOUT_MS", 25000))
+    return max(1000, _env_int("ANALYTICS_QUERY_TIMEOUT_MS", 180000
+    ))
 
 
 async def _execute_with_statement_timeout(session: AsyncSession, stmt: Any):
@@ -729,10 +731,12 @@ async def analytics_lost_bike_fee_summary(
     rider: str = Query("all", pattern="^(all|member|casual)$"),
 ):
     def _parquet_query(parquet_files: list[str]) -> str:
-        parquet_trips_cte = _parquet_trips_cte_sql(parquet_files)
+        columns = _parquet_columns_for_files(tuple(parquet_files))
+        parquet_files_sql = _parquet_file_list_sql(parquet_files)
+        trip_projection = _parquet_trip_projection_sql(columns, parquet_files_sql)
         return f"""
             WITH trips AS (
-                {parquet_trips_cte}
+                {trip_projection}
             ),
              durations AS (
                  SELECT
@@ -826,10 +830,12 @@ async def analytics_duration_buckets(
     bucket_minutes: int = Query(5, ge=1, le=1400),
 ):
     def _parquet_query(parquet_files: list[str]) -> str:
-        parquet_trips_cte = _parquet_trips_cte_sql(parquet_files)
+        columns = _parquet_columns_for_files(tuple(parquet_files))
+        parquet_files_sql = _parquet_file_list_sql(parquet_files)
+        trip_projection = _parquet_trip_projection_sql(columns, parquet_files_sql)
         return f"""
             WITH trips AS (
-                {parquet_trips_cte}
+                {trip_projection}
             ),
              durations AS (
                  SELECT
@@ -1021,7 +1027,7 @@ async def analytics_dashboard_summary(
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
         t = inspect(CitiBikeTrip).c
-        max_dashboard_rows = max(1000, _env_int("ANALYTICS_DASHBOARD_MAX_ROWS", 200000))
+        max_dashboard_rows = max(1000, _env_int("ANALYTICS_DASHBOARD_MAX_ROWS", 3000000))
         stmt = (
             select(
                 t.rideable_type.label("rideable_type"),
