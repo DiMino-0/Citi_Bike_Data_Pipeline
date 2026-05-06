@@ -83,6 +83,13 @@ type DashboardSummary = {
     averageActualMinutes: number;
     averageEstimatedMinutes: number;
     averageDeltaMinutes: number;
+    rideDurationFiveNumberSummary: {
+      min: number;
+      q1: number;
+      median: number;
+      q3: number;
+      max: number;
+    };
   };
   stationUsage: StationUsage[];
   histogramByBikeType: HistogramBucket[];
@@ -146,8 +153,15 @@ function pointRadiusFromTrips(trips: number): number {
 const barOptions: ChartOptions<"bar"> = {
   responsive: true,
   maintainAspectRatio: false,
+  interaction: {
+    intersect: false,
+    mode: "index",
+  },
   plugins: {
     legend: { display: false },
+    tooltip: {
+      intersect: false,
+    },
   },
   scales: {
     x: {
@@ -319,13 +333,29 @@ function parseDashboardSummary(value: unknown): DashboardSummary | null {
     averageActualMinutes?: unknown;
     averageEstimatedMinutes?: unknown;
     averageDeltaMinutes?: unknown;
+    rideDurationFiveNumberSummary?: unknown;
   };
+
+  const rideDurationFiveNumberSummary =
+    summary.rideDurationFiveNumberSummary as {
+      min?: unknown;
+      q1?: unknown;
+      median?: unknown;
+      q3?: unknown;
+      max?: unknown;
+    };
 
   if (
     typeof summary.tripCount !== "number" ||
     typeof summary.averageActualMinutes !== "number" ||
     typeof summary.averageEstimatedMinutes !== "number" ||
-    typeof summary.averageDeltaMinutes !== "number"
+    typeof summary.averageDeltaMinutes !== "number" ||
+    !rideDurationFiveNumberSummary ||
+    typeof rideDurationFiveNumberSummary.min !== "number" ||
+    typeof rideDurationFiveNumberSummary.q1 !== "number" ||
+    typeof rideDurationFiveNumberSummary.median !== "number" ||
+    typeof rideDurationFiveNumberSummary.q3 !== "number" ||
+    typeof rideDurationFiveNumberSummary.max !== "number"
   ) {
     return null;
   }
@@ -336,6 +366,13 @@ function parseDashboardSummary(value: unknown): DashboardSummary | null {
       averageActualMinutes: summary.averageActualMinutes,
       averageEstimatedMinutes: summary.averageEstimatedMinutes,
       averageDeltaMinutes: summary.averageDeltaMinutes,
+      rideDurationFiveNumberSummary: {
+        min: rideDurationFiveNumberSummary.min,
+        q1: rideDurationFiveNumberSummary.q1,
+        median: rideDurationFiveNumberSummary.median,
+        q3: rideDurationFiveNumberSummary.q3,
+        max: rideDurationFiveNumberSummary.max,
+      },
     },
     stationUsage: item.stationUsage
       .map((row) => {
@@ -802,7 +839,7 @@ function App() {
             onChange={(event) => setSelectedMonth(event.target.value)}
             disabled={months.length === 0}
           >
-            <option value="all">all</option>
+            {/* <option value="all">all</option> */}
             {months.map((month) => (
               <option key={month} value={month}>
                 {month}
@@ -864,7 +901,7 @@ function App() {
           </section>
 
           <section className="panel" aria-label="computed elements">
-            <h2>Ride Metrics</h2>
+            <h2 style={{ marginBottom: "1rem" }}>Ride Metrics</h2>
             {dashboardSummary ? (
               <>
                 <ul className="notes-list">
@@ -875,6 +912,32 @@ function App() {
                     )}{" "}
                     average across{" "}
                     {dashboardSummary.summary.tripCount.toLocaleString()} trips.
+                  </li>
+                  <li>
+                    Ride duration five-number summary: min{" "}
+                    {formatMinutes(
+                      dashboardSummary.summary.rideDurationFiveNumberSummary
+                        .min,
+                    )}
+                    , Q1{" "}
+                    {formatMinutes(
+                      dashboardSummary.summary.rideDurationFiveNumberSummary.q1,
+                    )}
+                    , median{" "}
+                    {formatMinutes(
+                      dashboardSummary.summary.rideDurationFiveNumberSummary
+                        .median,
+                    )}
+                    , Q3{" "}
+                    {formatMinutes(
+                      dashboardSummary.summary.rideDurationFiveNumberSummary.q3,
+                    )}
+                    , max{" "}
+                    {formatMinutes(
+                      dashboardSummary.summary.rideDurationFiveNumberSummary
+                        .max,
+                    )}
+                    .
                   </li>
                   <li>
                     Estimated trip duration:{" "}
@@ -893,7 +956,9 @@ function App() {
                   </li>
                 </ul>
 
-                <h3>Actual vs Estimated by Rider and Bike Type</h3>
+                <h3 style={{ marginBottom: "0.5rem", marginTop: "1rem" }}>
+                  Actual vs Estimated by Rider and Bike Type
+                </h3>
                 <table>
                   <thead>
                     <tr>
@@ -919,7 +984,10 @@ function App() {
                   </tbody>
                 </table>
 
-                <h3>Station Usage</h3>
+                <h3 style={{ marginBottom: "0.5rem", marginTop: "1rem" }}>
+                  {" "}
+                  Station Usage
+                </h3>
                 <table>
                   <thead>
                     <tr>
@@ -946,6 +1014,39 @@ function App() {
             ) : (
               <p className="status-loading">Computed summary loading...</p>
             )}
+          </section>
+
+          <section className="panel" aria-label="lost bike fee summary">
+            <h2>Lost Bike Fee by Rider Type</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Rider</th>
+                  <th>Fee Trips</th>
+                  <th>Total Trips</th>
+                  <th>Fee %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {feeRows.map((row) => {
+                  const pct =
+                    row.totalTrips === 0
+                      ? 0
+                      : (row.lostBikeFeeTrips / row.totalTrips) * 100;
+
+                  return (
+                    <tr key={`${row.tripMonth}-${row.memberCasual}`}>
+                      <td>{row.tripMonth}</td>
+                      <td>{row.memberCasual}</td>
+                      <td>{row.lostBikeFeeTrips.toLocaleString()}</td>
+                      <td>{row.totalTrips.toLocaleString()}</td>
+                      <td>{pct.toFixed(2)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </section>
 
           <section className="panel" aria-label="monthly trip counts">
@@ -982,39 +1083,6 @@ function App() {
                 </table>
               </div>
             ) : null}
-          </section>
-
-          <section className="panel" aria-label="lost bike fee summary">
-            <h2>Lost Bike Fee by Rider Type</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Month</th>
-                  <th>Rider</th>
-                  <th>Fee Trips</th>
-                  <th>Total Trips</th>
-                  <th>Fee %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {feeRows.map((row) => {
-                  const pct =
-                    row.totalTrips === 0
-                      ? 0
-                      : (row.lostBikeFeeTrips / row.totalTrips) * 100;
-
-                  return (
-                    <tr key={`${row.tripMonth}-${row.memberCasual}`}>
-                      <td>{row.tripMonth}</td>
-                      <td>{row.memberCasual}</td>
-                      <td>{row.lostBikeFeeTrips.toLocaleString()}</td>
-                      <td>{row.totalTrips.toLocaleString()}</td>
-                      <td>{pct.toFixed(2)}%</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
           </section>
 
           <section className="panel" aria-label="duration bucket summary">
@@ -1084,15 +1152,21 @@ function App() {
 
       {activeTab === "visualizations" ? (
         <section className="panel" aria-label="visualizations made">
-          <h2>Visualizations Made: </h2>
           {dashboardSummary ? (
             <>
-              <h3>Histograms</h3>
+              <h3 style={{ marginBottom: "0.5rem", marginTop: "1rem" }}>
+                Histograms
+              </h3>
               <div className="chart-grid chart-grid-2up">
                 <div className="chart-card">
                   <h4>By Bike Type</h4>
                   <div className="chart-wrapper">
-                    <Bar data={bikeHistogramChartData} options={barOptions} />
+                    <Bar
+                      data={bikeHistogramChartData}
+                      options={barOptions}
+                      height={"110%"}
+                      width={"110%"}
+                    />
                   </div>
                 </div>
                 <div className="chart-card">
@@ -1103,16 +1177,33 @@ function App() {
                 </div>
               </div>
 
-              <h3>Scatter: Trip Duration vs Time of Day</h3>
+              <h3 style={{ marginBottom: "0.5rem", marginTop: "1rem" }}>
+                Scatter: Trip Duration vs Time of Day
+              </h3>
               <div className="chart-wrapper">
                 <Scatter
                   data={durationByHourChartData}
                   options={{
                     ...scatterOptions,
+                    plugins: {
+                      ...(scatterOptions.plugins ?? {}),
+                      tooltip: {
+                        callbacks: {
+                          label: (context) => {
+                            const raw = context.raw as { trips?: number };
+                            const trips = raw.trips ?? 0;
+                            return `${context.dataset.label ?? "Series"}: ${trips.toLocaleString()} rides`;
+                          },
+                        },
+                      },
+                    },
                     scales: {
                       x: {
                         ...scatterOptions.scales?.x,
-                        title: { display: true, text: "Hour of Day" },
+                        title: {
+                          display: true,
+                          text: "Hour of Day",
+                        },
                         min: -0.5,
                         max: 23.5,
                       },

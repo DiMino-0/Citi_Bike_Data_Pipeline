@@ -153,12 +153,12 @@ def _month_exists_in_db(session: Session, month_value: str) -> bool:
 	return result.scalar() is not None
 
 
-def _month_row_count_in_db(session: Session, month_value: str) -> int:
-	"""Return row count for a given month in citibike_trips."""
-	query = "SELECT COUNT(*) FROM citibike_trips WHERE trip_month = %s"
-	result = session.connection().exec_driver_sql(query, (month_value,))
-	count = result.scalar()
-	return int(count) if count is not None else 0
+# def _month_row_count_in_db(session: Session, month_value: str) -> int:
+# 	"""Return row count for a given month in citibike_trips."""
+# 	query = "SELECT COUNT(*) FROM citibike_trips WHERE trip_month = %s"
+# 	result = session.connection().exec_driver_sql(query, (month_value,))
+# 	count = result.scalar()
+# 	return int(count) if count is not None else 0
 
 def _months_missing_in_db(session: Session, target_months: List[str]) -> List[str]:
 	"""Check which target months are not yet loaded in the database."""
@@ -182,24 +182,24 @@ def _months_missing_in_db(session: Session, target_months: List[str]) -> List[st
 	return missing
 
 
-def _months_to_selection(target_months: List[str]) -> tuple[str | None, str | None]:
-	"""Convert list of months to month/month_range parameters for ingest or seed."""
-	# If empty, return no selection
-	if not target_months:
-		return None, None
+# def _months_to_selection(target_months: List[str]) -> tuple[str | None, str | None]:
+# 	"""Convert list of months to month/month_range parameters for ingest or seed."""
+# 	# If empty, return no selection
+# 	if not target_months:
+# 		return None, None
 	
-	# If single month, specify just the month
-	if len(target_months) == 1:
-		single_month = target_months[0]
-		return single_month, None
+# 	# If single month, specify just the month
+# 	if len(target_months) == 1:
+# 		single_month = target_months[0]
+# 		return single_month, None
 	
-	# If multiple months, use range format (oldest to newest)
-	# target_months are in reverse order (newest first), so reverse to get oldest first
-	oldest_month = target_months[-1]
-	newest_month = target_months[0]
-	month_range = f"{oldest_month}..{newest_month}"
+# 	# If multiple months, use range format (oldest to newest)
+# 	# target_months are in reverse order (newest first), so reverse to get oldest first
+# 	oldest_month = target_months[-1]
+# 	newest_month = target_months[0]
+# 	month_range = f"{oldest_month}..{newest_month}"
 	
-	return None, month_range
+# 	return None, month_range
 
 def _month_from_file_name(path: Path) -> str:
     stem = path.stem
@@ -225,58 +225,58 @@ def _resolve_month_files_for_targets(data_dir: Path, target_months: List[str]) -
 	return files, missing
 
 
-def _find_month_files(data_dir: Path, target_month: str | None, target_range: str | None) -> List[Path]:
-	"""Find parquet files matching the target month or range in the data directory."""
-	# Find all matching parquet files
-	all_parquet_files = [
-		p for p in data_dir.glob("data*.parquet") 
-		if len(p.stem) == 10 and p.stem[4:].isdigit()
-	]
+# def _find_month_files(data_dir: Path, target_month: str | None, target_range: str | None) -> List[Path]:
+# 	"""Find parquet files matching the target month or range in the data directory."""
+# 	# Find all matching parquet files
+# 	all_parquet_files = [
+# 		p for p in data_dir.glob("data*.parquet") 
+# 		if len(p.stem) == 10 and p.stem[4:].isdigit()
+# 	]
 	
-	# Sort by filename (which is by month)
-	sorted_files = sorted(all_parquet_files, key=lambda p: p.stem, reverse=True)
-	logger.debug("Found %d parquet files in %s", len(sorted_files), data_dir)
+# 	# Sort by filename (which is by month)
+# 	sorted_files = sorted(all_parquet_files, key=lambda p: p.stem, reverse=True)
+# 	logger.debug("Found %d parquet files in %s", len(sorted_files), data_dir)
 	
-	# Build map of month -> file path
-	files_by_month = {p.stem[4:]: p for p in sorted_files}
+# 	# Build map of month -> file path
+# 	files_by_month = {p.stem[4:]: p for p in sorted_files}
 
-	# Handle month range selection
-	if target_range:
-		months_in_range = _parse_month_range(target_range)
-		selected_files: List[Path] = []
-		missing_months: List[str] = []
+# 	# Handle month range selection
+# 	if target_range:
+# 		months_in_range = _parse_month_range(target_range)
+# 		selected_files: List[Path] = []
+# 		missing_months: List[str] = []
 		
-		for month_value in months_in_range:
-			month_file = files_by_month.get(month_value)
-			if month_file is None:
-				missing_months.append(month_value)
-				continue
-			selected_files.append(month_file)
+# 		for month_value in months_in_range:
+# 			month_file = files_by_month.get(month_value)
+# 			if month_file is None:
+# 				missing_months.append(month_value)
+# 				continue
+# 			selected_files.append(month_file)
 
-		if missing_months:
-			raise FileNotFoundError(
-				f"Month parquet files not found for: {', '.join(missing_months)}"
-			)
-		return selected_files
+# 		if missing_months:
+# 			raise FileNotFoundError(
+# 				f"Month parquet files not found for: {', '.join(missing_months)}"
+# 			)
+# 		return selected_files
 
-	# Handle single month selection
-	if target_month:
-		validated_month = _validate_month(target_month)
-		target_path = data_dir / f"data{validated_month}.parquet"
+# 	# Handle single month selection
+# 	if target_month:
+# 		validated_month = _validate_month(target_month)
+# 		target_path = data_dir / f"data{validated_month}.parquet"
 		
-		if not target_path.exists():
-			raise FileNotFoundError(f"Month parquet not found: {target_path}")
+# 		if not target_path.exists():
+# 			raise FileNotFoundError(f"Month parquet not found: {target_path}")
 		
-		return [target_path]
+# 		return [target_path]
 
-	# Default: use most recent month file
-	if not sorted_files:
-		logger.debug("No parquet files found in %s", data_dir)
-		return []
+# 	# Default: use most recent month file
+# 	if not sorted_files:
+# 		logger.debug("No parquet files found in %s", data_dir)
+# 		return []
 	
-	most_recent = sorted_files[0]
-	logger.debug("Using most recent file: %s", most_recent.name)
-	return [most_recent]
+# 	most_recent = sorted_files[0]
+# 	logger.debug("Using most recent file: %s", most_recent.name)
+# 	return [most_recent]
 
 def _prepare_df(df: pd.DataFrame, trip_month: str) -> pd.DataFrame:
 	"""Prepare and clean Citi Bike trip dataframe for insertion."""

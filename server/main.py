@@ -3,6 +3,7 @@ import glob
 import logging
 import asyncio
 import fcntl
+import statistics
 from functools import lru_cache
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -140,8 +141,10 @@ def _duckdb_rows(query: str, params: list[object] | None = None) -> list[dict[st
     try:
         # Keep DuckDB from over-consuming memory in constrained containers.
         con.execute("PRAGMA threads=2")
-        con.execute("PRAGMA memory_limit='7GB'")
-        con.execute("PRAGMA temp_directory='/tmp'")
+        con.execute("PRAGMA memory_limit='10GB'")
+        spill_dir = Path(__file__).resolve().parent / "scratch" / "spill"
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        con.execute(f"PRAGMA temp_directory='{spill_dir.as_posix()}'")
         executed = con.execute(query, params or [])
         columns = [column[0] for column in executed.description]
         rows = executed.fetchall()
@@ -432,6 +435,35 @@ def _rounded(value: float | None, precision: int = 3) -> float | None:
     if value is None:
         return None
     return round(value, precision)
+
+
+def _five_number_summary(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"min": 0.0, "q1": 0.0, "median": 0.0, "q3": 0.0, "max": 0.0}
+
+    sorted_values = sorted(values)
+    min_value = float(sorted_values[0])
+    max_value = float(sorted_values[-1])
+    median_value = float(statistics.median(sorted_values))
+
+    midpoint = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 0:
+        lower_half = sorted_values[:midpoint]
+        upper_half = sorted_values[midpoint:]
+    else:
+        lower_half = sorted_values[:midpoint]
+        upper_half = sorted_values[midpoint + 1 :]
+
+    q1_value = float(statistics.median(lower_half)) if lower_half else median_value
+    q3_value = float(statistics.median(upper_half)) if upper_half else median_value
+
+    return {
+        "min": min_value,
+        "q1": q1_value,
+        "median": median_value,
+        "q3": q3_value,
+        "max": max_value,
+    }
 
 
 # Global variable to hold the startup lock file object (must stay alive for lock to persist)
@@ -1023,6 +1055,7 @@ async def analytics_dashboard_summary(
                AND started_at IS NOT NULL
                AND ended_at IS NOT NULL
                              AND (? = 'all' OR member_casual = ?)
+            
              """
 
     async def _fetch_db_rows() -> list[dict[str, object]]:
@@ -1079,6 +1112,7 @@ async def analytics_dashboard_summary(
 
     total_trips = 0
     actual_duration_total = 0.0
+    actual_durations: list[float] = []
     estimated_duration_total = 0.0
     actual_duration_with_estimate_total = 0.0
     estimated_trip_count = 0
@@ -1103,6 +1137,7 @@ async def analytics_dashboard_summary(
         ended_at = _coerce_datetime(row["ended_at"])
         actual_minutes = max(0.0, (ended_at - started_at).total_seconds() / 60)
         actual_duration_total += actual_minutes
+        actual_durations.append(actual_minutes)
 
         hour_key = (int(started_at.hour), member_casual)
         hour_bucket = duration_by_hour.setdefault(
@@ -1196,6 +1231,7 @@ async def analytics_dashboard_summary(
             if estimated_trip_count
             else 0.0
         ),
+        "rideDurationFiveNumberSummary": _five_number_summary(actual_durations),
     }
 
     def _finalize_average(payload: dict[str, float | int | str]) -> dict[str, float | int | str]:
@@ -1277,8 +1313,3 @@ async def analytics_dashboard_summary(
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server on 127.0.0.1:8000")
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
-#dev commands:
-# - FastAPI CLI: python3 -m fastapi dev main.py
-# - Uvicorn directly: uvicorn main.py --reload
-# - Docker container: docker-compose up --build in root
