@@ -28,8 +28,8 @@ services:
       context: ./client
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "3000:80"
+    # ports:
+    #   - "3000:80"
     depends_on:
       - backend
     networks:
